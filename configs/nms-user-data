@@ -6,6 +6,8 @@
 #     one file per sending router under /var/log/routers/)
 #   * be the way in to the routers -- it is the only node with a route to
 #     their management ports, so it doubles as the jump host from the host
+#   * poll the routers over SNMPv3 (snmpwalk/snmpget, via the xrsnmp wrapper)
+#     and receive their SNMPv3 traps (snmptrapd on udp/162)
 #
 # Delivered as a NoCloud seed ISO built by lab.sh. Credentials match the
 # other labs on this machine (lab / Lab_123!).
@@ -25,6 +27,8 @@ package_update: true
 packages:
   - rsyslog          # the minimal cloud image ships journald only
   - sshpass          # so a script can log in to XR without a tty
+  - snmp             # snmpwalk/snmpget, for polling the routers
+  - snmptrapd        # to receive their traps
   - iputils-ping
   - tcpdump
 
@@ -50,6 +54,85 @@ write_files:
                  fileCreateMode="0644" dirCreateMode="0755")
           stop
       }
+
+  # Receive SNMPv3 traps from the routers.
+  #
+  # A v3 trap is authenticated against the *sender's* engine ID, so each
+  # router needs its own createUser line keyed to it. Get it wrong and
+  # snmptrapd silently drops the trap as unauthenticated -- no rejection is
+  # logged by default, so it looks exactly as though the router never sent
+  # anything. (It does: `tcpdump -ni oob udp port 162` shows the packets.)
+  #
+  # XRv9k ignores `snmp-server engineID local` and derives the engine ID from
+  # its management MAC instead: 000000090300 followed by the MAC. These two
+  # values therefore track MAC_PREFIX in topology.env, and change if that
+  # does.
+  #
+  # `authUser` is also the access configuration. Without an access rule of
+  # some kind snmptrapd logs "No access configuration - dropping trap" and
+  # discards every trap after decrypting it -- which is indistinguishable,
+  # from the router's side, from a trap that was never sent.
+  #
+  # This file holds the SNMPv3 auth and privacy passwords, so it is not
+  # world-readable; runcmd gives it to the Debian-snmp group, because
+  # Ubuntu's unit runs the daemon as User=Debian-snmp and a root-only 0600
+  # file is one the daemon cannot read (same "No access configuration").
+  - path: /etc/snmp/snmptrapd.conf
+    content: |
+      # xr1: mgmt MAC 52:54:00:e9:01:01   xr2: mgmt MAC 52:54:00:e9:02:01
+      createUser -e 0x000000090300525400e90101 labmon SHA "Snmp_Auth_12345" AES "Snmp_Priv_12345"
+      createUser -e 0x000000090300525400e90201 labmon SHA "Snmp_Auth_12345" AES "Snmp_Priv_12345"
+      authUser log,execute labmon priv
+      # Print OIDs numerically, so what the traphandle files does not depend
+      # on which MIBs happen to be installed (net-snmp renders 1.3.6.1 as
+      # "iso." with no MIBs, and as a name with them). The tests match on
+      # the numeric form.
+      outputOption n
+      traphandle default /usr/local/bin/trap-log
+
+  # File each received trap as one line, so a test can count them and tell
+  # which router sent them.
+  #
+  # This is a traphandle rather than a log file because Ubuntu's unit runs
+  # snmptrapd with `-LOw`, which sends only warnings and above to syslog:
+  # errors appear, received traps do not. Overriding ExecStart to add -Lf
+  # would work too, but the handler keeps the packaged unit (and its socket
+  # activation of udp/162) untouched and gives a format that is trivial to
+  # parse.
+  - path: /usr/local/bin/trap-log
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      # snmptrapd traphandle. It feeds us the sending host on stdin line 1,
+      # the transport address on line 2, then one "OID value" pair per line.
+      log=/var/log/snmp/traps.log
+      {
+        read -r host || true
+        read -r addr || true
+        printf '%s host=%s addr=%s' "$(date -Is)" "$host" "$addr"
+        while read -r oid value; do printf ' | %s=%s' "$oid" "$value"; done
+        printf '\n'
+      } >> "$log"
+
+  # Poll a router by name with the lab's SNMPv3 credentials.
+  #   xrsnmp xr1                     -> walk sysName
+  #   xrsnmp xr1 1.3.6.1.2.1.1.5.0   -> get one OID
+  - path: /usr/local/bin/xrsnmp
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      # Usage: xrsnmp <xr1|xr2|address> [oid]
+      set -eu
+      target=$1; shift || true
+      case "$target" in
+          xr1) host=10.99.0.11 ;;
+          xr2) host=10.99.0.12 ;;
+          *)   host=$target ;;
+      esac
+      exec snmpwalk -v3 -l authPriv -u labmon \
+          -a SHA -A 'Snmp_Auth_12345' \
+          -x AES -X 'Snmp_Priv_12345' \
+          -t 5 -r 2 "$host" "${1:-1.3.6.1.2.1.1}"
 
   # Log in to a router by name without needing a tty for the password.
   #   xrssh xr1                  -> interactive session
@@ -83,6 +166,16 @@ runcmd:
   - [ chown, 'syslog:adm', /var/log/routers ]
   - [ chmod, '0755', /var/log/routers ]
   - [ systemctl, enable, --now, rsyslog ]
+  # Ubuntu runs snmptrapd as User=Debian-snmp, so both the config it reads
+  # and the directory its traphandle writes have to be reachable by that
+  # user. The user is created by the snmptrapd package, which cloud-init
+  # installs after write_files runs -- hence the chown here and not there.
+  - [ chown, 'root:Debian-snmp', /etc/snmp/snmptrapd.conf ]
+  - [ chmod, '0640', /etc/snmp/snmptrapd.conf ]
+  - [ mkdir, -p, /var/log/snmp ]
+  - [ chown, 'Debian-snmp:adm', /var/log/snmp ]
+  - [ chmod, '0755', /var/log/snmp ]
+  - [ systemctl, enable, --now, snmptrapd ]
   # Marker the tests wait for, so they never race cloud-init.
   - [ sh, -c, "touch /var/lib/cloud/nms-ready" ]
 

@@ -62,8 +62,10 @@ which the test suite demonstrates.
 
 `nms` is a small Ubuntu VM on the out-of-band network. It receives syslog from
 both routers (rsyslog, UDP 514, filed per router under `/var/log/routers/`),
-can log in to either over SSH, and is the way in from the host -- see
-**The out-of-band network** below.
+polls them and receives their traps over **SNMPv3 in authPriv mode**
+(snmptrapd on UDP 162, filed under `/var/log/snmp/`), can log in to either
+over SSH, and is the way in from the host -- see **The out-of-band network**
+below.
 
 `gobgp` is a second small Ubuntu VM running GoBGP as an **external** speaker:
 eBGP in AS 65100 over a dedicated link to xr1, originating 10000 prefixes
@@ -233,7 +235,7 @@ prefixes to look at.
 | `lab.sh` | Start/stop/inspect the lab |
 | `images/ubuntu-24.04-minimal-cloudimg-amd64.img` | nms base image. Never written to. |
 | `configs/xr1.cfg`, `configs/xr2.cfg` | Day-0 XR configuration per node |
-| `configs/nms-user-data` | nms cloud-init: users, rsyslog, `xrssh` |
+| `configs/nms-user-data` | nms cloud-init: users, rsyslog, snmptrapd, `xrssh`, `xrsnmp` |
 | `configs/nms-network-config` | nms interfaces, matched by MAC |
 | `configs/gobgp-user-data` | gobgp cloud-init: gobgpd, prefix injection |
 | `configs/gobgp-network-config` | gobgp interfaces, matched by MAC |
@@ -647,6 +649,107 @@ makes every message fail with `open error: Permission denied` in
 "Logging to 10.99.0.10, N message lines logged". The cloud-init seed chowns it
 to `syslog:adm` for exactly this reason.
 
+## SNMPv3
+
+nms is both the poller and the trap receiver. Everything is v3 in **authPriv**
+mode -- SHA authentication, AES privacy -- so nothing on the wire is readable
+and an unauthenticated request gets no answer. There is no v1 or v2c
+community anywhere in the lab.
+
+On each router:
+
+```
+snmp-server view  LABVIEW 1.3.6.1 included
+snmp-server group LABGROUP v3 priv read LABVIEW notify LABVIEW
+snmp-server user  labmon LABGROUP v3 auth sha clear Snmp_Auth_12345 \
+                                       priv aes 128 clear Snmp_Priv_12345 SystemOwner
+snmp-server host  10.99.0.10 traps version 3 priv labmon
+snmp-server trap-source MgmtEth0/RP0/CPU0/0
+snmp-server traps config
+snmp-server traps snmp linkup
+snmp-server traps snmp linkdown
+snmp-server traps bgp cbgp2
+```
+
+`trap-source` matters for the same reason `logging source-interface` does:
+it makes traps arrive from the router's OOB address, which is what tells the
+receiver -- and the tests -- which router sent them.
+
+### Polling
+
+cloud-init installs an `xrsnmp` wrapper on nms that carries the credentials,
+so a poll is:
+
+```
+lab@nms:~$ xrsnmp xr1 1.3.6.1.2.1.1.5.0
+.1.3.6.1.2.1.1.5.0 = STRING: "xr1"
+
+lab@nms:~$ xrsnmp xr2 1.3.6.1.2.1.1.6.0
+.1.3.6.1.2.1.1.6.0 = STRING: "IOS-XRv9000 lab"
+```
+
+With a wrong password the router simply does not answer the question:
+
+```
+lab@nms:~$ snmpwalk -v3 -l authPriv -u labmon -a SHA -A 'Wrong_Auth_12345' \
+             -x AES -X 'Snmp_Priv_12345' 10.99.0.11 1.3.6.1.2.1.1.5.0
+snmpwalk: Authentication failure (incorrect password, community or key)
+```
+
+which is what the `security`-tagged test asserts. A polling test that only
+checks the happy path passes just as well against an agent with no security
+at all.
+
+### Traps
+
+`snmptrapd` files one line per trap under `/var/log/snmp/traps.log`, with the
+sending address on every line:
+
+```
+lab@nms:~$ tail -1 /var/log/snmp/traps.log
+2026-09-10T21:26:19+00:00 host=<UNKNOWN> addr=UDP: [10.99.0.11]:161->[10.99.0.10]:162 \
+  | .1.3.6.1.2.1.1.3.0=0:0:39:30.58 \
+  | .1.3.6.1.6.3.1.1.4.1.0=.1.3.6.1.4.1.9.9.43.2.0.1 | ...
+```
+
+Committing a change produces `ciscoConfigManEvent` (`.1.3.6.1.4.1.9.9.43.2.0.1`),
+which is what the trap test uses as a trigger; shutting an interface produces
+`linkDown`/`linkUp` and, on xr1's gobgp link, `cbgpPeer2` state changes
+carrying the cause as text (`"administrative shutdown"`).
+
+Three things about this were not obvious, and each one fails silently:
+
+**The engine ID is not what you configure.** A v3 trap is authenticated
+against the *sender's* engine ID, so the receiver needs a `createUser` line
+keyed to each router. XRv9k **accepts and ignores** `snmp-server engineID
+local` -- it derives the engine ID from its management MAC instead, as
+`000000090300` followed by the MAC. Hence:
+
+```
+createUser -e 0x000000090300525400e90101 labmon SHA "..." AES "..."   # xr1
+createUser -e 0x000000090300525400e90201 labmon SHA "..." AES "..."   # xr2
+```
+
+Those two values track `MAC_PREFIX` in `topology.env`. Get one wrong and the
+trap is dropped as unauthenticated with nothing logged -- indistinguishable
+from a router that never sent it. `tcpdump -ni oob udp port 162` is how to
+tell the difference: the packets are there, `U="labmon"`.
+
+**The config file has to be readable by the daemon.** Ubuntu runs snmptrapd
+as `User=Debian-snmp`, so a sensible-looking `0600 root:root` on
+`/etc/snmp/snmptrapd.conf` -- it does hold the SNMPv3 passwords -- means the
+daemon cannot read its own configuration and logs `No access configuration -
+dropping trap` after decrypting every one. The seed makes it `0640
+root:Debian-snmp`. (`authUser` is itself the access configuration; without an
+access rule of some kind the same message appears.)
+
+**Received traps are not in the daemon's log by default.** Ubuntu's unit runs
+`snmptrapd -LOw`, which sends only warnings and above to syslog: errors show
+up, traps do not. Rather than override `ExecStart`, the seed installs a
+`traphandle` script -- the packaged unit and its socket activation of UDP 162
+stay untouched, and the format is easy for a test to parse. `outputOption n`
+keeps OIDs numeric so the tests do not depend on which MIBs are installed.
+
 ## Resources
 
 Router defaults are 4 vCPU and **20480 MiB** each; nms and gobgp take 1 vCPU
@@ -738,6 +841,10 @@ unconfigured box. CDP takes up to a minute after that to populate.
 | Routers Can Reach The Management Server Over OOB | `nms` `oob` | each router pings nms -- the direction syslog needs |
 | Management Server Can Log In To Each Router Over SSH | `nms` `ssh` | `xrssh` from nms runs commands on each router, and the right router answers |
 | Routers Send Syslog To The Management Server | `nms` `syslog` | a commit on each router produces new lines in its file on nms |
+| SNMP Trap Receiver Is Ready On The Management Server | `nms` `snmp` | snmptrapd is running and holding UDP 162 |
+| Management Server Can Poll Both Routers Over SNMPv3 | `nms` `snmp` | authPriv poll of sysName and sysLocation, and the right router answers |
+| Routers Reject An SNMPv3 Poll With The Wrong Credentials | `nms` `snmp` `security` | the same poll with a wrong auth password fails and leaks nothing |
+| Routers Send SNMPv3 Traps To The Management Server | `nms` `snmp` `traps` | a commit on each router produces its `ciscoConfigManEvent` trap on nms |
 | External BGP Speaker Is Ready | `gobgp` | gobgp finished cloud-init; gobgpd and the injection service are up |
 | External Speaker Originates The Expected Prefixes | `gobgp` | gobgp's own RIB holds all 10000, so a shortfall can be attributed to the right side |
 | EBGP Session To The External Speaker Is Established | `gobgp` `bgp` | xr1↔gobgp is Established, AS 65100, external -- checked from both ends |
@@ -823,6 +930,13 @@ The syslog test can be checked the same way -- remove
 `logging 10.99.0.10 vrf default severity info` from a router and it fails with
 `nms has filed 30 syslog lines for xr1 (10.99.0.11), was 30 -- no new messages
 arrived`.
+
+The SNMP trap test is checked by removing `snmp-server host 10.99.0.10 traps
+version 3 priv labmon` from a router, or by breaking one `createUser` line on
+nms: either way it fails naming the router and the OID it did not see. It only
+looks at trap lines filed *after* its own trigger, so it cannot pass on a trap
+that was already in the log from an earlier run. The polling test is checked
+by removing `snmp-server user labmon ...`.
 
 The syslog test commits a `description` on `Loopback0` to force a router to
 log something, and removes it again in its teardown, so the running config

@@ -1,8 +1,9 @@
 # docs
 
-`IOS-XR-NAC-topology.pdf` — a three-page reference for the lab: topology
+`IOS-XR-NAC-topology.pdf` — a four-page reference for the lab: topology
 diagram, node inventory, addressing, BGP ASNs and sessions, routing policy,
-management access, virtual wiring, configuration ownership and test coverage.
+SNMPv3, management access, virtual wiring, configuration ownership and test
+coverage.
 
 `topology.html` is the source. Regenerate the PDF with:
 

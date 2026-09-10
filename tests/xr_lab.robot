@@ -328,12 +328,74 @@ Routers Send Syslog To The Management Server
     ...                is used as the trigger so the test does not have to
     ...                wait for a router to log something spontaneously.
     [Tags]    nms    syslog
-    [Teardown]    Remove Syslog Probe Description
+    [Teardown]    Remove Probe Description
     FOR    ${node}    IN    @{NODES}
         ${before}=    Syslog Line Count    ${node}
-        Trigger Syslog Event On    ${node}
+        Trigger Config Commit On    ${node}
         Wait Until Keyword Succeeds    45s    5s
         ...    Syslog Count Should Have Grown    ${node}    ${before}
+    END
+
+SNMP Trap Receiver Is Ready On The Management Server
+    [Documentation]    Checked before the trap test so a missing trap is
+    ...                attributed to the right thing: a receiver that never
+    ...                started looks exactly like a router that never sent.
+    [Tags]    nms    snmp
+    Snmp Trap Receiver Should Be Ready
+
+Management Server Can Poll Both Routers Over SNMPv3
+    [Documentation]    SNMPv3 in authPriv mode (SHA authentication, AES
+    ...                privacy) from nms to each router's management address.
+    ...                sysName proves which router answered; sysLocation is
+    ...                set by day-0 config, so it also proves the reply came
+    ...                from the configured agent.
+    [Tags]    nms    snmp
+    FOR    ${node}    IN    @{NODES}
+        ${rc}    ${out}    ${err}=    Poll Router Over Snmpv3    ${node}    ${SNMP_SYSNAME_OID}
+        Should Be Equal As Integers    ${rc}    0
+        ...    nms could not poll ${node} over SNMPv3: rc=${rc}\n${out}${err}
+        Should Contain    ${out}    "${node}"
+        ...    ${node} answered sysName with something else:\n${out}
+
+        ${rc}    ${out}    ${err}=    Poll Router Over Snmpv3    ${node}    ${SNMP_LOCATION_OID}
+        Should Be Equal As Integers    ${rc}    0
+        ...    nms could not read sysLocation from ${node}: rc=${rc}\n${out}${err}
+        Should Contain    ${out}    ${SNMP_LOCATION}
+        ...    ${node} reported an unexpected sysLocation:\n${out}
+    END
+
+Routers Reject An SNMPv3 Poll With The Wrong Credentials
+    [Documentation]    The other half of the polling test: that a poll
+    ...                succeeds only says the routers answer, not that they
+    ...                check who is asking. The same request with a wrong
+    ...                authentication password has to fail -- otherwise
+    ...                SNMPv3 is configured but not enforced, and the test
+    ...                above would pass just as well against no security at
+    ...                all.
+    [Tags]    nms    snmp    security
+    FOR    ${node}    IN    @{NODES}
+        ${rc}    ${out}    ${err}=    Poll Router With The Wrong Password    ${node}
+        Should Not Be Equal As Integers    ${rc}    0
+        ...    ${node} answered a poll authenticated with the wrong password:\n${out}
+        Should Not Contain    ${out}    "${node}"
+        ...    ${node} leaked sysName to an unauthenticated poll:\n${out}
+    END
+
+Routers Send SNMPv3 Traps To The Management Server
+    [Documentation]    Each router's traps arrive at nms over the OOB
+    ...                network, authenticated and decrypted with its own
+    ...                engine ID. A commit is the trigger: XR sends a
+    ...                ciscoConfigManEvent trap for every one, and the test
+    ...                looks for that specific trap among the lines filed
+    ...                after the trigger, so it cannot pass on a trap that
+    ...                was already in the log.
+    [Tags]    nms    snmp    traps
+    [Teardown]    Remove Probe Description
+    FOR    ${node}    IN    @{NODES}
+        ${before}=    Trap Line Count    ${node}
+        Trigger Config Commit On    ${node}
+        Wait Until Keyword Succeeds    60s    5s
+        ...    Configuration Trap Should Have Arrived From    ${node}    ${{ int(${before}) + 1 }}
     END
 
 External BGP Speaker Is Ready

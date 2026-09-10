@@ -62,6 +62,28 @@ ${GOBGP_PREFIX_COUNT}     10000
 ${GOBGP_FIRST_PREFIX}     10.100.0.0/24
 ${GOBGP_LAST_PREFIX}      10.139.15.0/24
 
+# SNMPv3, in authPriv mode: the credentials both routers accept
+# (configs/<node>.cfg) and nms uses (its xrsnmp wrapper), and where
+# snmptrapd files what it receives.
+${SNMP_USER}              labmon
+${SNMP_AUTH_PASS}         Snmp_Auth_12345
+${SNMP_PRIV_PASS}         Snmp_Priv_12345
+# Used to prove the routers actually authenticate a poll rather than
+# answering anyone who asks.
+${SNMP_WRONG_AUTH_PASS}   Wrong_Auth_12345
+${SNMP_TRAP_LOG}          /var/log/snmp/traps.log
+# sysName.0: each router answers with its own hostname, so one poll shows
+# both that SNMP works and which router replied. sysLocation.0 is set by
+# day-0 config, so it also confirms the poll reached the configured agent
+# and not something else listening on udp/161.
+${SNMP_SYSNAME_OID}       1.3.6.1.2.1.1.5.0
+${SNMP_LOCATION_OID}      1.3.6.1.2.1.1.6.0
+${SNMP_LOCATION}          IOS-XRv9000 lab
+# CISCO-CONFIG-MAN-MIB::ciscoConfigManEvent -- the trap a commit produces,
+# which is what the trap tests use as their trigger. Numeric because
+# snmptrapd on nms is configured with `outputOption n`.
+${SNMP_CONFIG_TRAP_OID}   .1.3.6.1.4.1.9.9.43.2.0.1
+
 # The two links, by the interface each node uses. Both links are
 # point-to-point between the same pair of routers.
 @{LINK_INTERFACES}    GigabitEthernet0/0/0/0    GigabitEthernet0/0/0/1
@@ -162,21 +184,23 @@ Syslog Line Count
     ...    wc -l < ${SYSLOG_DIR}/${ip}.log 2>/dev/null || echo 0
     RETURN    ${out.strip()}
 
-Trigger Syslog Event On
-    [Documentation]    Make ${node} emit a syslog message on demand, by
-    ...                committing a harmless change. XR logs every commit
-    ...                (%MGBL-CONFIG-6-DB_COMMIT), so this is a reliable
-    ...                trigger; waiting for the routers to say something on
-    ...                their own would make the test slow and flaky.
+Trigger Config Commit On
+    [Documentation]    Make ${node} report an event on demand, by committing
+    ...                a harmless change. XR both logs every commit
+    ...                (%MGBL-CONFIG-6-DB_COMMIT) and sends a
+    ...                ciscoConfigManEvent trap for it, so one trigger serves
+    ...                the syslog and the SNMP trap tests alike; waiting for
+    ...                the routers to say something on their own would make
+    ...                both slow and flaky.
     [Arguments]    ${node}
     Run Command    ${node}    configure terminal
     Run Command    ${node}    interface Loopback0
-    Run Command    ${node}    description syslog-probe
+    Run Command    ${node}    description commit-probe
     Run Command    ${node}    commit
     Run Command    ${node}    end
 
-Remove Syslog Probe Description
-    [Documentation]    Undo Trigger Syslog Event On, on every router, so the
+Remove Probe Description
+    [Documentation]    Undo Trigger Config Commit On, on every router, so the
     ...                running config matches configs/<node>.cfg again.
     FOR    ${node}    IN    @{NODES}
         Run Command    ${node}    configure terminal
@@ -268,3 +292,77 @@ Withdraw Prefix Probes On Gobgp
     ...                       ${PREFIX_PROBE_WRONG_LENGTH}
         Run Command On Gobgp    gobgp global rib del ${prefix} -a ipv4
     END
+
+Snmp Trap Receiver Should Be Ready
+    [Documentation]    snmptrapd is running on nms and holding udp/162, so a
+    ...                missing trap is not just a receiver that never
+    ...                started.
+    ${rc}    ${out}    ${err}=    Run Command On Nms    systemctl is-active snmptrapd
+    Should Be Equal    ${out.strip()}    active
+    ...    snmptrapd on nms is "${out.strip()}", not active
+    ${rc}    ${out}    ${err}=    Run Command On Nms
+    ...    ss -lun | grep -F -c ':162'
+    Should Be True    ${out.strip()} > 0
+    ...    nothing on nms is listening on udp/162
+
+Poll Router Over Snmpv3
+    [Documentation]    Poll one OID on ${node} from nms with the lab's
+    ...                SNMPv3 credentials, through the same xrsnmp wrapper an
+    ...                operator would use. Returns rc, stdout, stderr.
+    [Arguments]    ${node}    ${oid}
+    ${rc}    ${out}    ${err}=    Run Command On Nms    xrsnmp ${node} ${oid}
+    RETURN    ${rc}    ${out}    ${err}
+
+Poll Router With The Wrong Password
+    [Documentation]    The same authPriv poll as Poll Router Over Snmpv3, but
+    ...                with a wrong authentication password, and going
+    ...                straight to snmpwalk rather than through the xrsnmp
+    ...                wrapper (which hardcodes the correct credentials).
+    ...                Short timeout and one retry: this is expected to fail,
+    ...                and the router answers a bad poll with silence.
+    [Arguments]    ${node}
+    ${cmd}=    Catenate
+    ...    snmpwalk -v3 -l authPriv -u ${SNMP_USER}
+    ...    -a SHA -A '${SNMP_WRONG_AUTH_PASS}'
+    ...    -x AES -X '${SNMP_PRIV_PASS}'
+    ...    -t 2 -r 1 ${OOB_IP}[${node}] ${SNMP_SYSNAME_OID}
+    ${rc}    ${out}    ${err}=    Run Command On Nms    ${cmd}
+    RETURN    ${rc}    ${out}    ${err}
+
+Trap Line Count
+    [Documentation]    Traps snmptrapd has filed from ${node} so far. The
+    ...                traphandle records the sending address on every line,
+    ...                which is what separates the two routers.
+    ...
+    ...                `grep | wc -l` rather than `grep -c`: grep exits 1 on
+    ...                no match, and a missing log file is another 0 rather
+    ...                than an error -- the file only appears once the first
+    ...                trap arrives.
+    [Arguments]    ${node}
+    ${ip}=    Set Variable    ${OOB_IP}[${node}]
+    ${rc}    ${out}    ${err}=    Run Command On Nms
+    ...    grep -F 'addr=UDP: [${ip}]' ${SNMP_TRAP_LOG} 2>/dev/null | wc -l
+    RETURN    ${out.strip()}
+
+Trap Log Lines From
+    [Documentation]    Trap lines nms has filed from ${node}, starting at
+    ...                ${from_line}. The log accumulates across runs, so a
+    ...                test that means "a trap arrived just now" has to skip
+    ...                what was already there.
+    [Arguments]    ${node}    ${from_line}=1
+    ${ip}=    Set Variable    ${OOB_IP}[${node}]
+    ${rc}    ${out}    ${err}=    Run Command On Nms
+    ...    grep -F 'addr=UDP: [${ip}]' ${SNMP_TRAP_LOG} 2>/dev/null | tail -n +${from_line}
+    RETURN    ${out}
+
+Configuration Trap Should Have Arrived From
+    [Documentation]    Retried while the trap is in flight. Asserting on the
+    ...                trap's own OID rather than just a line count means
+    ...                this cannot pass on some unrelated trap the router
+    ...                happened to send at the same moment, and proves
+    ...                snmptrapd authenticated and decrypted the v3 payload
+    ...                -- an undecryptable trap has no readable varbinds.
+    [Arguments]    ${node}    ${from_line}
+    ${lines}=    Trap Log Lines From    ${node}    ${from_line}
+    Should Contain    ${lines}    ${SNMP_CONFIG_TRAP_OID}
+    ...    no ciscoConfigManEvent (${SNMP_CONFIG_TRAP_OID}) trap from ${node} since line ${from_line} of ${SNMP_TRAP_LOG}:\n${lines}
