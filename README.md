@@ -345,7 +345,7 @@ The routers' configuration comes from two places, and the split matters:
 | | Owns | Delivered by |
 | --- | --- | --- |
 | **Day-0** (`configs/<node>.cfg`) | Bootstrap: hostname, credentials, management address, ssh, **grpc**; plus the interfaces, IS-IS and iBGP the lab is built on | `cvac`, from a CD-ROM at first boot |
-| **Network as Code** (`nac/`) | A labelled slice: `Loopback98`, the eBGP route-policies, and which policies the eBGP neighbour uses | Terraform over gNMI |
+| **Network as Code** (`nac/`) | A labelled slice: `Loopback98`, the AS-path set, the route-policies, and which policies each BGP neighbour uses | Terraform over gNMI |
 
 Day-0 has to exist first: it is what makes a router reachable by automation at
 all. Network as Code then reconciles the parts it owns, and can be re-run at
@@ -422,6 +422,63 @@ directions purely so the session accepts anything at all, and Network as Code
 replaces the inbound half with one that only accepts the /24 range gobgp is
 supposed to originate. All 10000 prefixes still arrive, but now because they
 match a policy rather than because nothing is being checked.
+
+### AS-path validation
+
+The inbound policy on the eBGP session checks two independent things, and a
+prefix has to satisfy both:
+
+```
+as-path-set NAC-GOBGP-ASPATH
+  ios-regex '^65100$'
+end-set
+!
+route-policy NAC-GOBGP-IN
+  if destination in (10.96.0.0/11 ge 24 le 24, 10.128.0.0/12 ge 24 le 24) and as-path in NAC-GOBGP-ASPATH then
+    pass
+  else
+    drop
+  endif
+end-policy
+```
+
+`^65100$` is an AS path of exactly one hop, AS 65100: gobgp originated the
+prefix and nothing else has touched it. An eBGP peer can advertise any AS
+path it likes, so this is the check that catches a prefix which has transited
+somewhere it should not have, or which claims an origin it does not have --
+regardless of whether the prefix itself looks plausible.
+
+xr2 applies the same expectation a second time, inbound on the **iBGP**
+session from xr1 (`NAC-IBGP-IN`). AS paths are not rewritten inside an AS, so
+what gobgp originated still reads `65100` when it arrives from xr1. xr1
+already filters, so this is defence in depth: if xr1's policy were removed or
+mis-edited, xr2 would still refuse a prefix carrying an AS path it should
+never see.
+
+To watch it work, originate two prefixes from gobgp that differ only in AS
+path -- both inside the policy's destination range, so the AS path is the only
+thing separating them:
+
+```bash
+lab@gobgp:~$ gobgp global rib add 10.140.0.0/24 -a ipv4                  # path: 65100
+lab@gobgp:~$ gobgp global rib add 10.140.1.0/24 -a ipv4 aspath 65200     # path: 65100 65200
+```
+
+```
+RP/0/RP0/CPU0:xr1#show bgp ipv4 unicast 10.140.0.0/24
+BGP routing table entry for 10.140.0.0/24      <- accepted
+
+RP/0/RP0/CPU0:xr1#show bgp ipv4 unicast 10.140.1.0/24
+%% Network not in table                        <- denied by NAC-GOBGP-IN
+```
+
+`Prefix With The Wrong AS Path Is Denied` automates exactly that, and cleans
+the probe prefixes up in its teardown. One trap worth knowing if you probe by
+hand: pick prefixes **outside** the injected range (which stops at
+`10.139.15.0/24`). A probe at, say, `10.101.201.0/24` is already one of the
+10000, so originating it with a different AS path silently *replaces* a real
+prefix rather than adding a new one -- the accepted count goes *down* by one
+instead of up, which is a confusing way to read a passing policy.
 
 ### Drift detection
 
@@ -586,6 +643,8 @@ unconfigured box. CDP takes up to a minute after that to populate.
 | Network As Code Manages The Labelled Loopback | `nac` | `Loopback98` matches `nac/iosxr.nac.yaml` -- config only Terraform creates |
 | Network As Code Owns The EBGP Route Policies | `nac` `bgp` | the NAC policies exist *and* are the ones the eBGP neighbour uses |
 | Day-0 Config Survived The Network As Code Apply | `nac` `bgp` | Terraform managing part of `router bgp` did not prune the day-0 iBGP neighbour, router-id or next-hop-self |
+| Routing Policies Check The AS Path | `nac` `bgp` `aspath` | the AS-path set exists on both routers and is referenced by the policies actually applied |
+| Prefix With The Wrong AS Path Is Denied | `nac` `bgp` `aspath` | end to end: of two prefixes differing only in AS path, only the legitimate one reaches xr1's table |
 
 Layout:
 

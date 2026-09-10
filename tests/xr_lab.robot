@@ -400,3 +400,51 @@ Day-0 Config Survived The Network As Code Apply
     ...    ${GOBGP_PEER}: the day-0 iBGP neighbour is gone:\n${output}
     Should Contain    ${output}    next-hop-self
     ...    ${GOBGP_PEER}: the day-0 next-hop-self is gone:\n${output}
+
+Routing Policies Check The AS Path
+    [Documentation]    The AS-path set and the policies that use it exist on
+    ...                both routers, and are the ones actually applied: xr1
+    ...                on the eBGP session, xr2 on the iBGP session as a
+    ...                second line of defence.
+    [Tags]    nac    bgp    aspath
+    FOR    ${node}    IN    @{NODES}
+        ${output}=    Run Command    ${node}
+        ...    show running-config as-path-set ${NAC_ASPATH_SET}
+        Should Contain    ${output}    as-path-set ${NAC_ASPATH_SET}
+        ...    ${node}: as-path-set ${NAC_ASPATH_SET} does not exist:\n${output}
+        Should Contain    ${output}    ${GOBGP_AS}
+        ...    ${node}: ${NAC_ASPATH_SET} does not mention AS ${GOBGP_AS}:\n${output}
+    END
+
+    # xr1 checks it inbound from the external speaker...
+    ${output}=    Run Command    ${GOBGP_PEER}    show running-config route-policy ${NAC_POLICY_IN}
+    Should Contain    ${output}    as-path in ${NAC_ASPATH_SET}
+    ...    ${GOBGP_PEER}: ${NAC_POLICY_IN} does not check the AS path:\n${output}
+
+    # ...and xr2 checks it again on what xr1 relays.
+    ${output}=    Run Command    xr2    show running-config router bgp
+    Should Contain    ${output}    route-policy ${NAC_POLICY_IBGP_IN} in
+    ...    xr2: the iBGP session is not using ${NAC_POLICY_IBGP_IN} inbound:\n${output}
+
+Prefix With The Wrong AS Path Is Denied
+    [Documentation]    The point of the AS-path policy, exercised end to end.
+    ...                gobgp originates two prefixes in the same subnet range:
+    ...                one with its normal AS path, one claiming to have
+    ...                transited AS ${ASPATH_PROBE_BAD_AS}. Only the first
+    ...                should reach xr1's BGP table -- both match the policy's
+    ...                destination range, so the AS path is the only thing
+    ...                that can separate them.
+    [Tags]    nac    bgp    aspath
+    [Teardown]    Withdraw Probe Prefixes On Gobgp
+    ${before}=    Accepted Prefix Count On    ${GOBGP_PEER}
+    Should Be Equal As Integers    ${before}    ${GOBGP_PREFIX_COUNT}
+    ...    ${GOBGP_PEER} started from ${before} prefixes, not ${GOBGP_PREFIX_COUNT} -- probe would be ambiguous
+
+    Inject Probe Prefixes On Gobgp
+
+    # Exactly one of the two should be accepted, so the count rises by one.
+    Wait Until Keyword Succeeds    60s    5s
+    ...    Accepted Count Should Be    ${GOBGP_PEER}    ${{ int(${before}) + 1 }}
+
+    Prefix Should Be In Bgp Table        ${GOBGP_PEER}    ${ASPATH_PROBE_GOOD}
+    Prefix Should Not Be In Bgp Table    ${GOBGP_PEER}    ${ASPATH_PROBE_BAD}

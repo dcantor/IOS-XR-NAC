@@ -27,12 +27,26 @@ iosxr:
                 address: 10.98.1.1
                 mask: 255.255.255.255
 
+        # What a prefix from gobgp is allowed to look like on the wire.
+        # `^65100$` is an AS path of exactly one hop, AS 65100: gobgp
+        # originated it and nobody else has touched it. A prefix that arrives
+        # having transited another AS, or claiming a different origin, does
+        # not match -- which is the case this exists to catch, since an eBGP
+        # peer can advertise any AS path it likes.
+        routing_sets:
+          - name: NAC-GOBGP-ASPATH
+            type: as_path
+            rpl: |
+              as-path-set NAC-GOBGP-ASPATH
+                ios-regex '^65100$'
+              end-set
+
         # Inbound policy for the external speaker. Day-0 applies a
         # permissive `PASS` in both directions purely so the eBGP session
         # accepts anything at all (IOS-XR applies no default policy to eBGP);
-        # this replaces the inbound half with one that only accepts the /24s
-        # gobgp is supposed to originate. The two inline ranges together
-        # cover 10.100.0.0/24 .. 10.139.15.0/24.
+        # this replaces the inbound half with one that checks both halves of
+        # what we expect: the right prefix range AND the right AS path. The
+        # two inline ranges together cover 10.100.0.0/24 .. 10.139.15.0/24.
         # `rpl` is the *whole* policy, wrapper included -- the device stores
         # and returns it that way, and a bare body is rejected with
         # "There is a parse error in the policy." So the name is repeated
@@ -41,7 +55,7 @@ iosxr:
           - name: NAC-GOBGP-IN
             rpl: |
               route-policy NAC-GOBGP-IN
-                if destination in (10.96.0.0/11 ge 24 le 24, 10.128.0.0/12 ge 24 le 24) then
+                if destination in (10.96.0.0/11 ge 24 le 24, 10.128.0.0/12 ge 24 le 24) and as-path in NAC-GOBGP-ASPATH then
                   pass
                 else
                   drop
@@ -75,3 +89,37 @@ iosxr:
               ipv4:
                 address: 10.98.2.1
                 mask: 255.255.255.255
+
+        # The same expectation, enforced a second time. xr1 already filters
+        # what it accepts from gobgp, so this is defence in depth rather
+        # than the primary check: if xr1's inbound policy were removed or
+        # mis-edited, xr2 would still refuse a prefix carrying an AS path it
+        # should never see over iBGP. AS paths are not rewritten inside an
+        # AS, so what gobgp originated still reads `65100` here.
+        routing_sets:
+          - name: NAC-GOBGP-ASPATH
+            type: as_path
+            rpl: |
+              as-path-set NAC-GOBGP-ASPATH
+                ios-regex '^65100$'
+              end-set
+
+        route_policies:
+          - name: NAC-IBGP-IN
+            rpl: |
+              route-policy NAC-IBGP-IN
+                if as-path in NAC-GOBGP-ASPATH then
+                  pass
+                else
+                  drop
+                endif
+              end-policy
+
+        routing:
+          bgp:
+            - as_number: 65000
+              neighbors:
+                - address: 1.1.1.1
+                  address_family:
+                    - name: ipv4-unicast
+                      route_policy_in: NAC-IBGP-IN

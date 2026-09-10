@@ -29,6 +29,17 @@ ${NAC_LOOPBACK_ID}        Loopback98
 ${NAC_LOOPBACK_DESC}      Managed by Network as Code
 ${NAC_POLICY_IN}          NAC-GOBGP-IN
 ${NAC_POLICY_OUT}         NAC-GOBGP-OUT
+${NAC_POLICY_IBGP_IN}     NAC-IBGP-IN
+${NAC_ASPATH_SET}         NAC-GOBGP-ASPATH
+
+# Probe prefixes for the AS-path policy test. Both sit inside the policy's
+# destination match (10.128.0.0/12) but outside the 10000 gobgp originates
+# (which stop at 10.139.15.0/24), so injecting them cannot collide with a
+# real one -- picking 10.101.x by mistake silently *replaces* an injected
+# prefix instead of adding a new one.
+${ASPATH_PROBE_GOOD}      10.140.0.0/24
+${ASPATH_PROBE_BAD}       10.140.1.0/24
+${ASPATH_PROBE_BAD_AS}    65200
 
 # The external BGP speaker: which router it peers with, over what addresses,
 # and how many prefixes it originates.
@@ -170,3 +181,48 @@ Gobgp Should Be Ready
     ...    systemctl is-active gobgpd gobgp-prefixes
     Should Be Equal    ${out.split()}    ${{ ['active', 'active'] }}
     ...    gobgpd / gobgp-prefixes on gobgp are ${out.split()}, expected both active
+
+Accepted Prefix Count On
+    [Documentation]    How many prefixes ${node} currently accepts from gobgp.
+    [Arguments]    ${node}
+    ${output}=    Run Command    ${node}
+    ...    show bgp ipv4 unicast neighbors ${GOBGP_LINK_IP_GOBGP} routes | include Processed
+    ${count}=     Parse Processed Count    ${output}
+    RETURN    ${count}
+
+Inject Probe Prefixes On Gobgp
+    [Documentation]    Originate two prefixes from gobgp: one with the normal
+    ...                AS path, one that claims to have transited another AS.
+    ...                gobgp prepends its own 65100 on the way out, so the
+    ...                second arrives as "65100 ${ASPATH_PROBE_BAD_AS}".
+    ${rc}    ${out}    ${err}=    Run Command On Gobgp
+    ...    gobgp global rib add ${ASPATH_PROBE_GOOD} -a ipv4
+    Should Be Equal As Integers    ${rc}    0    could not originate ${ASPATH_PROBE_GOOD}: ${err}
+    ${rc}    ${out}    ${err}=    Run Command On Gobgp
+    ...    gobgp global rib add ${ASPATH_PROBE_BAD} -a ipv4 aspath ${ASPATH_PROBE_BAD_AS}
+    Should Be Equal As Integers    ${rc}    0    could not originate ${ASPATH_PROBE_BAD}: ${err}
+
+Withdraw Probe Prefixes On Gobgp
+    [Documentation]    Teardown for the AS-path test: leave gobgp originating
+    ...                exactly the ${GOBGP_PREFIX_COUNT} it started with.
+    Run Command On Gobgp    gobgp global rib del ${ASPATH_PROBE_GOOD} -a ipv4
+    Run Command On Gobgp    gobgp global rib del ${ASPATH_PROBE_BAD} -a ipv4
+
+Prefix Should Be In Bgp Table
+    [Arguments]    ${node}    ${prefix}
+    ${output}=    Run Command    ${node}    show bgp ipv4 unicast ${prefix}
+    Should Contain    ${output}    BGP routing table entry for ${prefix}
+    ...    ${node}: ${prefix} is not in the BGP table:\n${output}
+
+Prefix Should Not Be In Bgp Table
+    [Arguments]    ${node}    ${prefix}
+    ${output}=    Run Command    ${node}    show bgp ipv4 unicast ${prefix}
+    Should Contain    ${output}    Network not in table
+    ...    ${node}: ${prefix} reached the BGP table but should have been denied:\n${output}
+
+Accepted Count Should Be
+    [Documentation]    Retried while BGP reconverges after a prefix change.
+    [Arguments]    ${node}    ${expected}
+    ${count}=    Accepted Prefix Count On    ${node}
+    Should Be Equal As Integers    ${count}    ${expected}
+    ...    ${node} accepts ${count} prefixes from gobgp, expected ${expected}
