@@ -1,0 +1,128 @@
+#cloud-config
+# Day-0 configuration for gobgp, an external BGP speaker.
+#
+# It peers eBGP with xr1 over a dedicated point-to-point link and originates
+# 10000 synthetic prefixes, so the lab has a realistic number of routes
+# arriving from outside its own AS.
+#
+#   gobgp  AS 65100  10.2.1.2/30  <--->  10.2.1.1/30  Gi0/0/0/2  xr1  AS 65000
+#
+# The gobgpd binaries come from the seed ISO rather than a download at boot,
+# so the VM does not need internet access to be useful. lab.sh puts the
+# release tarball on the seed; see README.md.
+hostname: gobgp
+ssh_pwauth: true
+disable_root: false
+
+users:
+  - name: lab
+    plain_text_passwd: 'Lab_123!'
+    lock_passwd: false
+    shell: /bin/bash
+    sudo: 'ALL=(ALL) NOPASSWD:ALL'
+    groups: [sudo]
+
+write_files:
+  - path: /etc/gobgp/gobgpd.toml
+    permissions: '0644'
+    content: |
+      # eBGP to xr1. The prefixes themselves are not listed here: gobgpd
+      # takes originated routes through its API, which is what
+      # /usr/local/bin/inject-prefixes uses.
+      [global.config]
+        as = 65100
+        router-id = "10.2.1.2"
+
+      [[neighbors]]
+        [neighbors.config]
+          neighbor-address = "10.2.1.1"
+          peer-as = 65000
+          description = "xr1"
+        [neighbors.transport.config]
+          local-address = "10.2.1.2"
+        [[neighbors.afi-safis]]
+          [neighbors.afi-safis.config]
+            afi-safi-name = "ipv4-unicast"
+
+  # Originate `count` /24s, walking two octets so the count is not capped at
+  # 256: prefix n is 10.<100 + n/256>.<n % 256>.0/24, so 10000 prefixes span
+  # 10.100.0.0/24 .. 10.139.15.0/24. Those second octets stay clear of the
+  # lab's own 10.1/10.2/10.99 networks.
+  #
+  # Run as a service so the routes come back after a reboot, not just on
+  # first boot. The gobgp CLI takes one prefix per invocation (there is no
+  # stdin batch mode), but manages ~100/s, so 10000 takes roughly 100
+  # seconds; the service is not Type=oneshot-blocking on anything, so a slow
+  # inject only delays the routes, not the boot.
+  - path: /usr/local/bin/inject-prefixes
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Usage: inject-prefixes [count]   (default 10000)
+      set -euo pipefail
+      count=${1:-10000}
+
+      # gobgpd's API takes a moment to come up; without this the first few
+      # adds fail and the service exits before advertising anything.
+      for _ in $(seq 60); do
+          if gobgp global rib summary >/dev/null 2>&1; then break; fi
+          sleep 1
+      done
+      gobgp global rib summary >/dev/null \
+          || { echo "gobgpd API never became ready" >&2; exit 1; }
+
+      start=$SECONDS
+      for i in $(seq 0 $((count - 1))); do
+          gobgp global rib add "10.$((100 + i / 256)).$((i % 256)).0/24" -a ipv4
+      done
+      echo "originated $count prefixes in $((SECONDS - start))s"
+
+  - path: /etc/systemd/system/gobgpd.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=GoBGP daemon
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      ExecStart=/usr/local/bin/gobgpd -f /etc/gobgp/gobgpd.toml
+      Restart=always
+      RestartSec=2
+
+      [Install]
+      WantedBy=multi-user.target
+
+  - path: /etc/systemd/system/gobgp-prefixes.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Originate the lab's synthetic BGP prefixes
+      After=gobgpd.service
+      Requires=gobgpd.service
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/bin/inject-prefixes 10000
+      # ~100s for 10000 prefixes; the default 90s start timeout would kill it
+      TimeoutStartSec=600
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  # gobgpd/gobgp ride along on the seed image (labelled CIDATA) that
+  # cloud-init itself was read from.
+  - [ mkdir, -p, /mnt/seed ]
+  - [ sh, -c, "mount -o ro LABEL=CIDATA /mnt/seed" ]
+  - [ sh, -c, "tar -C /usr/local/bin -xzf /mnt/seed/gobgp-*.tar.gz gobgp gobgpd" ]
+  - [ sh, -c, "chmod 0755 /usr/local/bin/gobgp /usr/local/bin/gobgpd" ]
+  - [ umount, /mnt/seed ]
+  - [ systemctl, daemon-reload ]
+  - [ systemctl, enable, --now, gobgpd.service ]
+  - [ systemctl, enable, --now, gobgp-prefixes.service ]
+  # Marker the tests wait for, so they never race cloud-init.
+  - [ sh, -c, "touch /var/lib/cloud/gobgp-ready" ]
+
+final_message: "gobgp ready after $UPTIME seconds"

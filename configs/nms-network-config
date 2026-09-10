@@ -1,0 +1,24 @@
+# cloud-init network config (v2) for nms, part of the NoCloud seed.
+#
+# Interfaces are matched by MAC rather than by kernel name: the names the
+# Ubuntu image picks (ens3/ens4, enp0s3/...) depend on the machine type and
+# PCI slot, and getting them wrong leaves the OOB interface unconfigured with
+# nothing obvious in the logs. The MACs are assigned by lab.sh from
+# MAC_PREFIX[nms] in topology.env.
+version: 2
+ethernets:
+  nat:
+    # QEMU user-mode NAT: the host's SSH forward lands here, and cloud-init
+    # installs rsyslog/sshpass over it.
+    match:
+      macaddress: '52:54:00:e9:03:01'
+    set-name: nat
+    dhcp4: true
+  oob:
+    # The OOB management network shared with both routers' management ports.
+    match:
+      macaddress: '52:54:00:e9:03:02'
+    set-name: oob
+    dhcp4: false
+    addresses:
+      - 10.99.0.10/24

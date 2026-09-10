@@ -1,0 +1,6 @@
+# Terraform working files that are machine-local. The lock file is
+# deliberately NOT here: committing it pins the module and provider versions
+# that are known to work against XRv9k 26.1.1.
+.terraform/
+terraform.tfstate
+terraform.tfstate.backup

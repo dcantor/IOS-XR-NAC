@@ -1,0 +1,27 @@
+# --- VM images -------------------------------------------------------------
+# The XRv9000 image is Cisco-licensed and 2 GB; it is not redistributable and
+# has to be supplied by whoever runs the lab. The Ubuntu cloud image and the
+# gobgpd release are both freely downloadable -- see README.md -- so they are
+# fetched rather than committed.
+*.qcow2
+*.img
+images/
+
+# --- runtime state ---------------------------------------------------------
+# Overlay disks (several GB each), generated ISOs, UEFI variable stores,
+# pidfiles and console logs. All rebuilt by ./lab.sh start.
+run/
+
+# --- test and tooling artefacts -------------------------------------------
+results/
+.venv/
+__pycache__/
+*.pyc
+
+# --- terraform -------------------------------------------------------------
+# Provider binaries are large and platform-specific; state is machine-local.
+# The lock file IS committed (see nac/.gitignore note) so the versions that
+# are known to work are pinned.
+nac/.terraform/
+nac/terraform.tfstate
+nac/terraform.tfstate.backup

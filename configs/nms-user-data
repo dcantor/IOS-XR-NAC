@@ -1,0 +1,89 @@
+#cloud-config
+# Day-0 configuration for nms, the lab's management server.
+#
+# Two jobs:
+#   * receive syslog from the routers over the OOB network (rsyslog, UDP 514,
+#     one file per sending router under /var/log/routers/)
+#   * be the way in to the routers -- it is the only node with a route to
+#     their management ports, so it doubles as the jump host from the host
+#
+# Delivered as a NoCloud seed ISO built by lab.sh. Credentials match the
+# other labs on this machine (lab / Lab_123!).
+hostname: nms
+ssh_pwauth: true
+disable_root: false
+
+users:
+  - name: lab
+    plain_text_passwd: 'Lab_123!'
+    lock_passwd: false
+    shell: /bin/bash
+    sudo: 'ALL=(ALL) NOPASSWD:ALL'
+    groups: [sudo]
+
+package_update: true
+packages:
+  - rsyslog          # the minimal cloud image ships journald only
+  - sshpass          # so a script can log in to XR without a tty
+  - iputils-ping
+  - tcpdump
+
+write_files:
+  # Accept syslog over UDP on the OOB network and file it per sending router.
+  # RemoteHost stays in the filename so a test can look for one router's
+  # messages specifically.
+  - path: /etc/rsyslog.d/10-lab-router-syslog.conf
+    permissions: '0644'
+    content: |
+      # Listen for syslog from the lab routers on the OOB network.
+      module(load="imudp")
+      input(type="imudp" port="514")
+
+      # One file per sending host, plus a combined view.
+      template(name="RouterFile" type="string"
+               string="/var/log/routers/%FROMHOST-IP%.log")
+
+      if ($fromhost-ip != "127.0.0.1") then {
+          action(type="omfile" dynaFile="RouterFile"
+                 fileCreateMode="0644" dirCreateMode="0755")
+          action(type="omfile" file="/var/log/routers/all.log"
+                 fileCreateMode="0644" dirCreateMode="0755")
+          stop
+      }
+
+  # Log in to a router by name without needing a tty for the password.
+  #   xrssh xr1                  -> interactive session
+  #   xrssh xr1 show version     -> run one command
+  - path: /usr/local/bin/xrssh
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      # Usage: xrssh <xr1|xr2|address> [command ...]
+      set -eu
+      target=$1; shift || true
+      case "$target" in
+          xr1) host=10.99.0.11 ;;
+          xr2) host=10.99.0.12 ;;
+          *)   host=$target ;;
+      esac
+      exec sshpass -p 'Admin@12345' ssh \
+          -o StrictHostKeyChecking=no \
+          -o UserKnownHostsFile=/dev/null \
+          -o LogLevel=ERROR \
+          -o PreferredAuthentications=password \
+          -o PubkeyAuthentication=no \
+          admin@"$host" "$@"
+
+runcmd:
+  # rsyslog drops privileges to the syslog user, so the directory it writes
+  # into has to be owned by it. Created as root:root, every message is
+  # dropped with "open error: Permission denied" in /var/log/syslog and
+  # nothing at all appears here.
+  - [ mkdir, -p, /var/log/routers ]
+  - [ chown, 'syslog:adm', /var/log/routers ]
+  - [ chmod, '0755', /var/log/routers ]
+  - [ systemctl, enable, --now, rsyslog ]
+  # Marker the tests wait for, so they never race cloud-init.
+  - [ sh, -c, "touch /var/lib/cloud/nms-ready" ]
+
+final_message: "nms ready after $UPTIME seconds"

@@ -1,0 +1,77 @@
+# Cisco Network as Code data model for the lab's IOS-XR routers.
+#
+# Scope: this owns a labelled slice of the configuration, not the whole
+# device. configs/<node>.cfg (day-0) still bootstraps each router to the
+# point where automation can reach it -- management address, credentials,
+# ssh, grpc -- and brings up the interfaces, IS-IS and iBGP that the lab is
+# built on. Everything below is what Network as Code owns and reconciles.
+#
+# `host` is a 127.0.0.1 port because the routers' management ports live only
+# on the OOB network; nac.sh tunnels those ports through nms. The provider
+# speaks gNMI, which the routers enable with `grpc / port 57400 / no-tls`.
+iosxr:
+  devices:
+    - name: xr1
+      host: 127.0.0.1:57411
+      configuration:
+        # Already what day-0 set, so this converges to a no-op -- it makes
+        # the model the source of truth for identity without changing
+        # anything.
+        hostname: xr1
+
+        interfaces:
+          loopbacks:
+            - id: 98
+              description: Managed by Network as Code
+              ipv4:
+                address: 10.98.1.1
+                mask: 255.255.255.255
+
+        # Inbound policy for the external speaker. Day-0 applies a
+        # permissive `PASS` in both directions purely so the eBGP session
+        # accepts anything at all (IOS-XR applies no default policy to eBGP);
+        # this replaces the inbound half with one that only accepts the /24s
+        # gobgp is supposed to originate. The two inline ranges together
+        # cover 10.100.0.0/24 .. 10.139.15.0/24.
+        # `rpl` is the *whole* policy, wrapper included -- the device stores
+        # and returns it that way, and a bare body is rejected with
+        # "There is a parse error in the policy." So the name is repeated
+        # inside the text; keep the two in step.
+        route_policies:
+          - name: NAC-GOBGP-IN
+            rpl: |
+              route-policy NAC-GOBGP-IN
+                if destination in (10.96.0.0/11 ge 24 le 24, 10.128.0.0/12 ge 24 le 24) then
+                  pass
+                else
+                  drop
+                endif
+              end-policy
+          - name: NAC-GOBGP-OUT
+            rpl: |
+              route-policy NAC-GOBGP-OUT
+                pass
+              end-policy
+
+        routing:
+          bgp:
+            - as_number: 65000
+              neighbors:
+                - address: 10.2.1.2
+                  address_family:
+                    - name: ipv4-unicast
+                      route_policy_in: NAC-GOBGP-IN
+                      route_policy_out: NAC-GOBGP-OUT
+
+    - name: xr2
+      host: 127.0.0.1:57412
+      configuration:
+        hostname: xr2
+
+        interfaces:
+          loopbacks:
+            - id: 98
+              description: Managed by Network as Code
+              ipv4:
+                address: 10.98.2.1
+                mask: 255.255.255.255

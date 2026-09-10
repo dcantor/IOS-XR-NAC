@@ -1,0 +1,23 @@
+# cloud-init network config (v2) for gobgp, part of the NoCloud seed.
+#
+# Matched by MAC for the same reason as nms: the kernel's names depend on PCI
+# slot ordering, and a wrong guess leaves the peering link unconfigured with
+# nothing obvious in the logs. MACs come from MAC_PREFIX[gobgp] in
+# topology.env.
+version: 2
+ethernets:
+  nat:
+    # QEMU user-mode NAT: the host's SSH forward lands here.
+    match:
+      macaddress: '52:54:00:e9:04:01'
+    set-name: nat
+    dhcp4: true
+  xrlink:
+    # Point-to-point to xr1's GigabitEthernet0/0/0/2; the eBGP session runs
+    # over this.
+    match:
+      macaddress: '52:54:00:e9:04:02'
+    set-name: xrlink
+    dhcp4: false
+    addresses:
+      - 10.2.1.2/30
