@@ -7,7 +7,7 @@
 #
 # Every run writes to its own timestamped directory under test_results/:
 #
-#   test_results/results_2026-09-10_14-30-45/{output.xml,log.html,report.html}
+#   test_results/results_2026-09-10_14-30-45/{report.html,log.html,output.xml}
 #   test_results/latest -> results_2026-09-10_14-30-45
 #
 # so runs accumulate for comparison instead of overwriting each other, and

@@ -633,8 +633,15 @@ test_results/
 ```
 
 `test_results/latest` is a symlink to the most recent run, so it is a stable
-path to hand to a browser or a CI step. The directory is kept in the
-repository (via `.gitkeep`) but its contents are not committed.
+path to hand to a browser or a CI step.
+
+The most recent run's `report.html` and `log.html` are **committed**, as the
+record of what this lab was last verified to do. Two caveats: GitHub will not
+render them in the browser -- they have to be downloaded, or opened through a
+raw-HTML proxy -- and `output.xml` is excluded to keep each run to the two
+files that actually get read (drop the `test_results/**/output.xml` line from
+`.gitignore` if you want it; it is what `rebot` needs to merge or re-render
+runs).
 
 The lab must be booted *and* have its day-0 config applied -- wait for
 `%MGBL-CVAC-4-CONFIG_DONE` -- or the tests will correctly report an
