@@ -212,7 +212,7 @@ prefixes to look at.
 | `tools/conmux.py` | Keep a console logged to a file, drive it from a FIFO |
 | `tools/qmon.py` | Send commands to a node's QEMU monitor |
 | `run/` | Overlay disks, day-0 ISOs, UEFI variable stores, pidfiles |
-| `results/` | Robot output, log.html and report.html (regenerated) |
+| `test_results/` | One timestamped directory per run, plus a `latest` symlink |
 | `.venv/` | Test dependencies, created on first `./run_tests.sh` |
 
 ## The out-of-band network
@@ -533,8 +533,28 @@ minute first boot.
 
 The system Python is PEP 668 "externally managed", so `run_tests.sh` creates
 `.venv/` on first run and installs `robotframework` and `paramiko` into it.
-It refuses to run if no node is up, and results land in `results/`
-(`log.html` is the one to open when something fails).
+
+Before running anything it validates the environment: it refuses to start if
+no node is up, and warns by name about any node that is down, rather than
+letting the suite fail with a wall of SSH timeouts.
+
+Every run gets its own timestamped directory under `test_results/`, so runs
+accumulate for comparison instead of overwriting each other:
+
+```
+test_results/
+├── latest -> results_2026-09-10_10-22-10
+├── results_2026-09-10_10-21-08/
+│   ├── log.html          <- open this when something fails
+│   ├── output.xml
+│   └── report.html
+└── results_2026-09-10_10-22-10/
+    └── ...
+```
+
+`test_results/latest` is a symlink to the most recent run, so it is a stable
+path to hand to a browser or a CI step. The directory is kept in the
+repository (via `.gitkeep`) but its contents are not committed.
 
 The lab must be booted *and* have its day-0 config applied -- wait for
 `%MGBL-CVAC-4-CONFIG_DONE` -- or the tests will correctly report an

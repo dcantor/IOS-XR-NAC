@@ -13,7 +13,10 @@ images/
 run/
 
 # --- test and tooling artefacts -------------------------------------------
-results/
+# Each run of ./run_tests.sh creates test_results/results_<timestamp>/. The
+# directory itself is kept (via .gitkeep) so a clone has somewhere to write.
+test_results/*
+!test_results/.gitkeep
 .venv/
 __pycache__/
 *.pyc
