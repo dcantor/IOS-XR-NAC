@@ -6,6 +6,10 @@ management server, and an external GoBGP speaker injecting 10000 prefixes --
 all as plain QEMU/KVM guests, no root required. Part of the routers'
 configuration is managed with Cisco Network as Code (Terraform over gNMI).
 
+> **This is a lab.** Credentials are committed in plaintext and transport
+> security is switched off throughout, deliberately. See
+> [This is a lab. Do not use any of it in production.](#this-is-a-lab-do-not-use-any-of-it-in-production)
+
 ```
                  Gi0/0/0/0 .1 ──── link1  10.1.1.0/30 ──── .2 Gi0/0/0/0
       ┌───────┐                                                        ┌───────┐
@@ -82,14 +86,33 @@ Sizing: about 42 GiB of RAM for the four VMs, and roughly 15 GiB of disk for
 the overlays. The 20 GiB per router is not negotiable -- see
 **Two things this image needs that are easy to get wrong**.
 
-### A note on credentials
+### This is a lab. Do not use any of it in production.
 
-The lab's passwords (`admin`/`Admin@12345` on the routers, `lab`/`Lab_123!` on
-the Linux VMs) are hard-coded in `topology.env`, `configs/` and
-`tests/XrCli.py`, in plaintext and on purpose: the point is a lab that comes
-up the same way every time with no secret handling. They are throwaway
-credentials for VMs on a loopback network. Do not reuse them anywhere, and
-think twice before making this repository public as-is.
+Everything here optimises for a lab that comes up identically every time on
+one machine, which is the opposite of what a production network wants:
+
+**Credentials are in the repository, in plaintext, on purpose.**
+`admin`/`Admin@12345` on the routers and `lab`/`Lab_123!` on the Linux VMs
+appear in `topology.env`, `configs/` and `tests/XrCli.py`. They are throwaway
+values for throwaway VMs on a loopback network, committed so that
+`./lab.sh start` needs no secret handling. **Do not reuse them, or this
+pattern of committing them, anywhere real.**
+
+**Other things that are fine here and not fine in production:**
+
+| | Here | Production would |
+| --- | --- | --- |
+| gNMI transport | `no-tls`, with `IOSXR_TLS=false` | TLS with a real certificate, and `verify_certificate` on |
+| Router login | password auth, one shared `admin` | per-user accounts, SSH keys or TACACS+/RADIUS |
+| SSH host keys | `StrictHostKeyChecking=no` everywhere | known hosts, or certificates |
+| `sshpass`/`SSH_ASKPASS` | used to script logins | key-based auth, an agent, or a secrets manager |
+| eBGP policy | one `PASS` from day-0 as a bootstrap | no permissive default, ever |
+| Terraform state | a local file | remote state with locking |
+
+The network design itself -- loopback-based iBGP, IS-IS advertising the
+loopbacks, `next-hop-self`, AS-path validation on what a peer sends -- is
+ordinary good practice and does translate. It is the *access* and *secret*
+handling that does not.
 
 ## Quick start
 
