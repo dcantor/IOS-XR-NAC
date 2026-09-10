@@ -1,0 +1,365 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>IOS-XRv9000 Lab — Topology and Testbed</title>
+<style>
+  @page { size: A4; margin: 14mm 13mm; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font: 9.2pt/1.38 "DejaVu Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    color: #16202b; margin: 0;
+  }
+  h1 { font-size: 17pt; margin: 0 0 2pt; letter-spacing: -0.2pt; }
+  .sub { color: #5d6b7a; font-size: 9pt; margin: 0 0 12pt; }
+  h2 {
+    font-size: 10.5pt; margin: 11pt 0 4pt; padding-bottom: 2.5pt;
+    border-bottom: 1.2pt solid #0b5c8a; color: #0b5c8a;
+    text-transform: uppercase; letter-spacing: 0.5pt;
+  }
+  h3 { font-size: 9.6pt; margin: 10pt 0 4pt; color: #16202b; }
+  table { border-collapse: collapse; width: 100%; margin: 0 0 5pt; font-size: 8.6pt; }
+  th {
+    background: #0b5c8a; color: #fff; text-align: left;
+    padding: 3.4pt 5pt; font-weight: 600; font-size: 8.2pt;
+    text-transform: uppercase; letter-spacing: 0.3pt;
+  }
+  td { padding: 2.9pt 5pt; border-bottom: 0.5pt solid #dde3e9; vertical-align: top; }
+  tr:nth-child(even) td { background: #f6f8fa; }
+  code, .m { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 8.2pt; }
+  .note {
+    background: #fff8e6; border-left: 2.5pt solid #d9a406;
+    padding: 4.5pt 8pt; margin: 6pt 0; font-size: 8.4pt;
+  }
+  .note b { color: #8a6400; }
+  .cols { display: flex; gap: 11pt; }
+  .cols > * { flex: 1; min-width: 0; }
+  .diagram { text-align: center; margin: 4pt 0 2pt; }
+  .cap { font-size: 7.8pt; color: #5d6b7a; text-align: center; margin: 0 0 4pt; }
+  .pass { color: #1a7f37; font-weight: 600; }
+  /* Let content flow, but never split a table across pages or orphan a
+     heading from the table it introduces. */
+  table { page-break-inside: avoid; }
+  /* ...except long reference tables, which are better split than followed by
+     half a blank page. */
+  table.long { page-break-inside: auto; }
+  h2, h3 { page-break-after: avoid; }
+  .note { page-break-inside: avoid; }
+</style>
+
+<h1>Cisco IOS-XRv9000 Lab — Topology &amp; Testbed</h1>
+<p class="sub">
+  Four QEMU/KVM guests on one host, no root required &nbsp;·&nbsp;
+  IS-IS + iBGP core, external eBGP speaker, out-of-band management &nbsp;·&nbsp;
+  configured with Cisco Network as Code &nbsp;·&nbsp;
+  <span class="m">github.com/dcantor/IOS-XR-NAC</span>
+</p>
+
+<p class="note" style="margin-top:0">
+  <b>Lab environment only.</b> Credentials are committed in plaintext and transport security is
+  disabled throughout, deliberately — see the repository README. Do not reuse either in a
+  production network. Figures here are read from the live lab and its committed configuration.
+</p>
+
+<h2>Topology</h2>
+<div class="diagram">
+<svg width="662" height="300" viewBox="0 0 710 322" xmlns="http://www.w3.org/2000/svg"
+     font-family="DejaVu Sans, Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#44586b"/>
+    </marker>
+  </defs>
+
+  <!-- ================= routers ================= -->
+  <g>
+    <rect x="196" y="96" width="112" height="56" rx="4" fill="#0b5c8a" stroke="#083f5f"/>
+    <text x="252" y="118" font-size="14" font-weight="bold" fill="#fff" text-anchor="middle">xr1</text>
+    <text x="252" y="132" font-size="8.5" fill="#bcd9ea" text-anchor="middle">IOS-XRv9000 26.1.1</text>
+    <text x="252" y="144" font-size="9" fill="#fff" text-anchor="middle" font-family="DejaVu Sans Mono, monospace">Lo0 1.1.1.1/32</text>
+  </g>
+  <g>
+    <rect x="446" y="96" width="112" height="56" rx="4" fill="#0b5c8a" stroke="#083f5f"/>
+    <text x="502" y="118" font-size="14" font-weight="bold" fill="#fff" text-anchor="middle">xr2</text>
+    <text x="502" y="132" font-size="8.5" fill="#bcd9ea" text-anchor="middle">IOS-XRv9000 26.1.1</text>
+    <text x="502" y="144" font-size="9" fill="#fff" text-anchor="middle" font-family="DejaVu Sans Mono, monospace">Lo0 2.2.2.2/32</text>
+  </g>
+
+  <!-- AS 65000 boundary -->
+  <rect x="176" y="76" width="402" height="84" rx="6" fill="none" stroke="#0b5c8a"
+        stroke-width="1" stroke-dasharray="5 3" opacity="0.55"/>
+  <text x="377" y="70" font-size="9" font-weight="bold" fill="#0b5c8a" text-anchor="middle">AS 65000 — iBGP, IS-IS level-2</text>
+
+  <!-- ============ the two core links ============ -->
+  <line x1="308" y1="112" x2="446" y2="112" stroke="#44586b" stroke-width="1.6"/>
+  <text x="377" y="107" font-size="8.4" fill="#16202b" text-anchor="middle" font-weight="bold">link1 · 10.1.1.0/30</text>
+  <text x="316" y="123" font-size="7.6" fill="#5d6b7a" font-family="DejaVu Sans Mono, monospace">Gi0/0/0/0 .1</text>
+  <text x="438" y="123" font-size="7.6" fill="#5d6b7a" text-anchor="end" font-family="DejaVu Sans Mono, monospace">.2 Gi0/0/0/0</text>
+
+  <line x1="308" y1="142" x2="446" y2="142" stroke="#44586b" stroke-width="1.6"/>
+  <text x="377" y="157" font-size="8.4" fill="#16202b" text-anchor="middle" font-weight="bold">link2 · 10.1.2.0/30</text>
+  <text x="316" y="138" font-size="7.6" fill="#5d6b7a" font-family="DejaVu Sans Mono, monospace">Gi0/0/0/1 .1</text>
+  <text x="438" y="138" font-size="7.6" fill="#5d6b7a" text-anchor="end" font-family="DejaVu Sans Mono, monospace">.2 Gi0/0/0/1</text>
+
+  <!-- iBGP session over the loopbacks -->
+  <path d="M252,96 C252,40 502,40 502,96" fill="none" stroke="#7b3fa0"
+        stroke-width="1.3" stroke-dasharray="4 2.5"/>
+  <text x="377" y="36" font-size="8.2" fill="#7b3fa0" text-anchor="middle" font-weight="bold">
+    iBGP 1.1.1.1 ↔ 2.2.2.2 (update-source Loopback0, next-hop-self on xr1)
+  </text>
+
+  <!-- ============ gobgp, external ============ -->
+  <g>
+    <rect x="16" y="96" width="104" height="56" rx="4" fill="#1a7f37" stroke="#125827"/>
+    <text x="68" y="118" font-size="13" font-weight="bold" fill="#fff" text-anchor="middle">gobgp</text>
+    <text x="68" y="131" font-size="8.5" fill="#c3e6cd" text-anchor="middle">GoBGP 4.9.0</text>
+    <text x="68" y="143" font-size="8.5" fill="#fff" text-anchor="middle" font-weight="bold">AS 65100</text>
+  </g>
+  <line x1="120" y1="124" x2="196" y2="124" stroke="#1a7f37" stroke-width="1.8"/>
+  <text x="158" y="115" font-size="8.2" fill="#1a7f37" text-anchor="middle" font-weight="bold">eBGP</text>
+  <text x="158" y="137" font-size="7.2" fill="#5d6b7a" text-anchor="middle" font-family="DejaVu Sans Mono, monospace">10.2.1.0/30</text>
+  <text x="158" y="147" font-size="7.2" fill="#5d6b7a" text-anchor="middle" font-family="DejaVu Sans Mono, monospace">→ Gi0/0/0/2</text>
+  <text x="68" y="172" font-size="8" fill="#1a7f37" text-anchor="middle" font-weight="bold">originates 10 000 prefixes</text>
+  <text x="68" y="182" font-size="7" fill="#5d6b7a" text-anchor="middle" font-family="DejaVu Sans Mono, monospace">10.100.0.0/24 … 10.139.15.0/24</text>
+
+  <!-- ============ OOB management ============ -->
+  <line x1="252" y1="152" x2="252" y2="228" stroke="#a06a1b" stroke-width="1.2"/>
+  <line x1="502" y1="152" x2="502" y2="228" stroke="#a06a1b" stroke-width="1.2"/>
+  <line x1="120" y1="228" x2="640" y2="228" stroke="#a06a1b" stroke-width="2.6"/>
+  <text x="640" y="222" font-size="8.6" fill="#a06a1b" text-anchor="end" font-weight="bold">OOB management · 10.99.0.0/24</text>
+  <text x="258" y="170" font-size="7.4" fill="#5d6b7a" font-family="DejaVu Sans Mono, monospace">MgmtEth0/RP0/CPU0/0</text>
+  <text x="258" y="180" font-size="7.4" fill="#5d6b7a" font-family="DejaVu Sans Mono, monospace">10.99.0.11</text>
+  <text x="508" y="170" font-size="7.4" fill="#5d6b7a" font-family="DejaVu Sans Mono, monospace">MgmtEth0/RP0/CPU0/0</text>
+  <text x="508" y="180" font-size="7.4" fill="#5d6b7a" font-family="DejaVu Sans Mono, monospace">10.99.0.12</text>
+
+  <g>
+    <rect x="298" y="248" width="126" height="52" rx="4" fill="#a06a1b" stroke="#7a4f12"/>
+    <text x="361" y="268" font-size="13" font-weight="bold" fill="#fff" text-anchor="middle">nms</text>
+    <text x="361" y="281" font-size="8.3" fill="#f0dcbe" text-anchor="middle">Ubuntu 24.04 · rsyslog</text>
+    <text x="361" y="292" font-size="8.5" fill="#fff" text-anchor="middle" font-family="DejaVu Sans Mono, monospace">10.99.0.10</text>
+  </g>
+  <line x1="361" y1="228" x2="361" y2="248" stroke="#a06a1b" stroke-width="1.2"/>
+
+  <!-- syslog arrows into nms -->
+  <path d="M252,206 L340,206" fill="none" stroke="#a06a1b" stroke-width="1"
+        stroke-dasharray="3 2" marker-end="url(#a)"/>
+  <path d="M502,206 L382,206" fill="none" stroke="#a06a1b" stroke-width="1"
+        stroke-dasharray="3 2" marker-end="url(#a)"/>
+  <text x="361" y="203" font-size="7.6" fill="#a06a1b" text-anchor="middle">syslog udp/514</text>
+
+  <!-- ============ host ============ -->
+  <rect x="452" y="248" width="188" height="52" rx="4" fill="#eef2f6" stroke="#9fb0c0"/>
+  <text x="546" y="266" font-size="10.5" font-weight="bold" fill="#16202b" text-anchor="middle">host</text>
+  <text x="546" y="279" font-size="7.8" fill="#44586b" text-anchor="middle">QEMU user-mode NAT + SSH forwards</text>
+  <text x="546" y="291" font-size="7.6" fill="#44586b" text-anchor="middle">Robot Framework · Terraform (gNMI)</text>
+  <line x1="424" y1="274" x2="452" y2="274" stroke="#44586b" stroke-width="1.2"/>
+  <text x="438" y="269" font-size="7" fill="#5d6b7a" text-anchor="middle">jump</text>
+</svg>
+</div>
+<p class="cap">
+  Solid = data plane. Dashed purple = iBGP session over loopbacks. Dashed orange = syslog.
+  The routers' management ports exist only on the OOB network; the host reaches them through <b>nms</b>.
+</p>
+
+<div class="cols">
+<div>
+<h2>Nodes</h2>
+<table>
+  <tr><th>Node</th><th>Role</th><th>Image</th><th>vCPU</th><th>RAM</th></tr>
+  <tr><td><b>xr1</b></td><td>Router, eBGP edge</td><td>IOS-XRv9000 26.1.1</td><td>4</td><td>20 GiB</td></tr>
+  <tr><td><b>xr2</b></td><td>Router</td><td>IOS-XRv9000 26.1.1</td><td>4</td><td>20 GiB</td></tr>
+  <tr><td><b>nms</b></td><td>Syslog server, jump host</td><td>Ubuntu 24.04 minimal</td><td>1</td><td>1 GiB</td></tr>
+  <tr><td><b>gobgp</b></td><td>External BGP speaker</td><td>Ubuntu 24.04 + GoBGP 4.9.0</td><td>1</td><td>1 GiB</td></tr>
+</table>
+</div>
+<div>
+<h2>BGP</h2>
+<table>
+  <tr><th>Session</th><th>Type</th><th>Local AS</th><th>Peer AS</th><th>Prefixes</th></tr>
+  <tr><td class="m">1.1.1.1 ↔ 2.2.2.2</td><td>iBGP</td><td>65000</td><td>65000</td><td>10 000</td></tr>
+  <tr><td class="m">10.2.1.1 ↔ 10.2.1.2</td><td>eBGP</td><td>65000</td><td><b>65100</b></td><td>10 000</td></tr>
+</table>
+<p style="font-size:8.4pt;margin:2pt 0 0">
+  iBGP peers loopback-to-loopback (<span class="m">update-source Loopback0</span>), so the session
+  rides the IS-IS-learned /32 and survives either link failing. xr1 applies
+  <span class="m">next-hop-self</span> so xr2 can resolve the external prefixes.
+</p>
+</div>
+</div>
+
+<h2>Host requirements</h2>
+<table>
+  <tr><th>Resource</th><th>Needed</th><th>Note</th></tr>
+  <tr><td>RAM</td><td><b>≈ 42 GiB</b></td>
+      <td>20 GiB per router is not negotiable — below ~18 GiB the XRv9k host OS wedges during
+          boot with nothing logged.</td></tr>
+  <tr><td>Disk</td><td>≈ 15 GiB</td><td>Copy-on-write overlays; the 2 GB base image is never written to.</td></tr>
+  <tr><td>Virtualisation</td><td><span class="m">/dev/kvm</span></td>
+      <td>Nested virtualisation required — XRv9k runs XR inside a nested VM.</td></tr>
+  <tr><td>Firmware</td><td>OVMF (UEFI)</td>
+      <td>The image is UEFI-only; its protective MBR carries no boot code.</td></tr>
+  <tr><td>Privileges</td><td>none</td><td>No bridges, no tap devices, no root.</td></tr>
+</table>
+
+<h2>Addressing</h2>
+<table class="long" style="table-layout:fixed">
+  <tr>
+    <th style="width:23%">Segment</th><th style="width:15%">Subnet</th>
+    <th style="width:13%">xr1</th><th style="width:13%">xr2</th><th>Other end / notes</th>
+  </tr>
+  <tr><td>Loopback0</td><td class="m">/32</td>
+      <td class="m">1.1.1.1</td><td class="m">2.2.2.2</td>
+      <td>Router identity; advertised into IS-IS as passive, and the iBGP peering address</td></tr>
+  <tr><td>link1 — Gi0/0/0/0</td><td class="m">10.1.1.0/30</td>
+      <td class="m">10.1.1.1</td><td class="m">10.1.1.2</td><td>Router-to-router</td></tr>
+  <tr><td>link2 — Gi0/0/0/1</td><td class="m">10.1.2.0/30</td>
+      <td class="m">10.1.2.1</td><td class="m">10.1.2.2</td><td>Router-to-router</td></tr>
+  <tr><td>eBGP — Gi0/0/0/2</td><td class="m">10.2.1.0/30</td>
+      <td class="m">10.2.1.1</td><td>—</td>
+      <td>gobgp at <span class="m">10.2.1.2</span>; xr1 only</td></tr>
+  <tr><td>OOB — MgmtEth0/RP0/CPU0/0</td><td class="m">10.99.0.0/24</td>
+      <td class="m">10.99.0.11</td><td class="m">10.99.0.12</td>
+      <td>nms at <span class="m">10.99.0.10</span>, which also collects syslog on udp/514</td></tr>
+  <tr><td>Loopback98 <span style="color:#7b3fa0">(NaC-managed)</span></td><td class="m">/32</td>
+      <td class="m">10.98.1.1</td><td class="m">10.98.2.1</td>
+      <td>Created by Terraform, not by day-0 config</td></tr>
+  <tr><td>Injected prefixes</td><td class="m">10.100.0.0/24 … 10.139.15.0/24</td>
+      <td colspan="2">10 000 × /24</td>
+      <td>Originated by gobgp; prefix <i>n</i> is <span class="m">10.&lt;100+n/256&gt;.&lt;n%256&gt;.0/24</span></td></tr>
+  <tr><td>IS-IS NET</td><td class="m">49.0001…</td>
+      <td class="m">…0001.00</td><td class="m">…0002.00</td>
+      <td>Area 49.0001, level-2 only</td></tr>
+  <tr><td>gNMI</td><td class="m">tcp/57400</td>
+      <td colspan="2" class="m">no-tls</td>
+      <td>How Terraform reaches the routers, tunnelled via nms</td></tr>
+</table>
+
+<h2>Routing protocols</h2>
+<table>
+  <tr><th>Protocol</th><th>Where</th><th>Detail</th></tr>
+  <tr>
+    <td><b>IS-IS</b> <span class="m">CORE</span></td>
+    <td>both links + Loopback0 (passive)</td>
+    <td>Level-2 only, point-to-point. Each router learns the other's /32 over
+        <b>both</b> links, giving two equal-cost paths — visible in CEF as a
+        recursive load-share across Gi0/0/0/0 and Gi0/0/0/1.</td>
+  </tr>
+  <tr>
+    <td><b>iBGP</b> AS 65000</td>
+    <td>Loopback0 ↔ Loopback0</td>
+    <td>Carries the 10 000 external prefixes from xr1 to xr2 with
+        <span class="m">next-hop-self</span>, so they arrive resolvable via <span class="m">1.1.1.1</span>.</td>
+  </tr>
+  <tr>
+    <td><b>eBGP</b> AS 65000 ↔ 65100</td>
+    <td>xr1 Gi0/0/0/2 ↔ gobgp</td>
+    <td>gobgp originates 10 000 /24s. Inbound policy validates both the prefix
+        range and the AS path before accepting any of them.</td>
+  </tr>
+  <tr>
+    <td><b>CDP</b></td>
+    <td>Gi0/0/0/0, Gi0/0/0/1</td>
+    <td>Each router sees exactly its peer on each link — the check that caught
+        an early wiring bug where frames looped back to the sender.</td>
+  </tr>
+</table>
+
+<h2>Routing policy</h2>
+<p style="font-size:8.6pt;margin:0 0 6pt">
+  IOS-XR applies <b>no default policy</b> to an eBGP neighbour: without one the session
+  establishes and every prefix is silently discarded. Day-0 therefore installs a permissive
+  <span class="m">PASS</span> purely to bootstrap, and Network as Code replaces the inbound half with
+  a policy that checks two independent things.
+</p>
+<table>
+  <tr><th>Object</th><th>On</th><th>Purpose</th></tr>
+  <tr><td class="m">NAC-GOBGP-ASPATH</td><td>xr1, xr2</td>
+      <td>as-path-set <span class="m">ios-regex '^65100$'</span> — an AS path of exactly one hop,
+          AS 65100: gobgp originated it and nothing else has touched it.</td></tr>
+  <tr><td class="m">NAC-GOBGP-IN</td><td>xr1 (eBGP in)</td>
+      <td>Accepts only if the destination is in the expected /24 range
+          <b>and</b> the AS path matches the set. Everything else is dropped.</td></tr>
+  <tr><td class="m">NAC-GOBGP-OUT</td><td>xr1 (eBGP out)</td><td><span class="m">pass</span>.</td></tr>
+  <tr><td class="m">NAC-IBGP-IN</td><td>xr2 (iBGP in)</td>
+      <td>Same AS-path check applied again on what xr1 relays — defence in depth,
+          since AS paths are not rewritten inside an AS.</td></tr>
+</table>
+<div class="note">
+  <b>Why the AS-path check matters:</b> an eBGP peer can advertise any AS path it likes.
+  A prefix in the right range but carrying <span class="m">65100 65200</span> — i.e. it transited
+  somewhere it should not have — is rejected. The test suite proves this by originating two
+  prefixes that differ <i>only</i> in AS path and confirming just one reaches the table.
+</div>
+
+<h2>Management and access</h2>
+<table>
+  <tr><th>Node</th><th>Console (telnet)</th><th>SSH from host</th><th>QEMU monitor</th><th>Credentials</th></tr>
+  <tr><td><b>xr1</b></td><td class="m">127.0.0.1:5101</td><td class="m">10.99.0.11 via nms</td><td class="m">127.0.0.1:4101</td><td class="m">admin</td></tr>
+  <tr><td><b>xr2</b></td><td class="m">127.0.0.1:5111</td><td class="m">10.99.0.12 via nms</td><td class="m">127.0.0.1:4111</td><td class="m">admin</td></tr>
+  <tr><td><b>nms</b></td><td class="m">127.0.0.1:5121</td><td class="m">127.0.0.1:2261</td><td class="m">127.0.0.1:4121</td><td class="m">lab</td></tr>
+  <tr><td><b>gobgp</b></td><td class="m">127.0.0.1:5131</td><td class="m">127.0.0.1:2262</td><td class="m">127.0.0.1:4131</td><td class="m">lab</td></tr>
+</table>
+<div class="note">
+  <b>Only nms and gobgp have a host SSH forward.</b> XRv9k has a single management port, so it
+  cannot sit on the OOB network <i>and</i> behind a NAT forward — the host has no route to the
+  routers. <span class="m">nms</span> bridges that: it is on the OOB network and reachable from the
+  host, so it serves as the jump host for both the CLI and the test suite.
+</div>
+
+<h2>Virtual wiring</h2>
+<table>
+  <tr><th>Segment</th><th>QEMU netdev</th><th>Why</th></tr>
+  <tr><td>link1 / link2</td><td class="m">socket, unicast UDP pairs<br>11001↔11002, 11003↔11004</td>
+      <td>A true point-to-point wire. Multicast sockets loop frames back to the sender, which
+          made every router appear as its own CDP neighbour.</td></tr>
+  <tr><td>eBGP link</td><td class="m">socket, UDP 11005↔11006</td><td>Same, to xr1's sixth vNIC.</td></tr>
+  <tr><td>OOB network</td><td class="m">socket, mcast 230.31.0.1:11099</td>
+      <td>A shared segment for three nodes. Multicast loopback is harmless here: no
+          link-layer neighbour protocol runs on it.</td></tr>
+  <tr><td>Host access</td><td class="m">user (SLIRP) + hostfwd</td><td>nms and gobgp only.</td></tr>
+</table>
+<p style="font-size:8.4pt;margin:2pt 0 0">
+  vNIC order fixes XRv9k interface naming and cannot be varied:
+  <span class="m">1</span> MgmtEth0/RP0/CPU0/0 · <span class="m">2</span> CtrlEth ·
+  <span class="m">3</span> DevEth · <span class="m">4</span> Gi0/0/0/0 ·
+  <span class="m">5</span> Gi0/0/0/1 · <span class="m">6</span> Gi0/0/0/2 (xr1 only). CtrlEth and
+  DevEth are internal to a real chassis, but the image expects the vNICs, so they get dead-end hubs.
+</p>
+
+<h2>Configuration ownership</h2>
+<table>
+  <tr><th>Layer</th><th>Owns</th><th>Delivered by</th></tr>
+  <tr><td><b>Day-0</b><br><span class="m">configs/&lt;node&gt;.cfg</span></td>
+      <td>Bootstrap: hostname, credentials, management address, ssh, gRPC — plus the interfaces,
+          IS-IS and iBGP the lab is built on</td>
+      <td><span class="m">cvac</span>, from a CD-ROM at first boot</td></tr>
+  <tr><td><b>Network as Code</b><br><span class="m">nac/iosxr.nac.yaml</span></td>
+      <td>Loopback98, the AS-path set, the route-policies, and which policies each BGP
+          neighbour uses</td>
+      <td>Terraform over gNMI —
+          <span class="m">netascode/nac-iosxr</span> 0.1.1 /
+          <span class="m">CiscoDevNet/iosxr</span> 0.7.1</td></tr>
+</table>
+<p style="font-size:8.4pt;margin:2pt 0 0">
+  Day-0 must come first: it is what makes a router reachable by automation. Network as Code then
+  reconciles what it owns — an out-of-band edit shows up as a
+  <span class="m">terraform plan</span> diff and is corrected by the next apply.
+</p>
+
+<h2>Verification</h2>
+<p style="font-size:8.6pt;margin:0 0 6pt">
+  <span class="pass">26 of 26 Robot Framework tests passing</span> (74 s). Each run writes to its
+  own timestamped directory under <span class="m">test_results/</span>; sessions are tunnelled
+  through nms, the same path an operator uses.
+</p>
+<table class="long">
+  <tr><th>Tag</th><th>Covers</th></tr>
+  <tr><td class="m">version, config</td><td>Software release and that day-0 config actually applied</td></tr>
+  <tr><td class="m">cdp</td><td>Each router sees exactly its peer on each link, on the matching remote port</td></tr>
+  <tr><td class="m">isis, ecmp</td><td>One adjacency per link; the peer loopback learned over two equal-cost paths</td></tr>
+  <tr><td class="m">bgp, ibgp</td><td>Sessions established; peering uses the loopback addresses; all 10 000 prefixes relayed</td></tr>
+  <tr><td class="m">nms, oob, ssh, syslog</td><td>OOB reachability, nms logging in to each router, syslog delivery per router</td></tr>
+  <tr><td class="m">gobgp, prefixes</td><td>All 10 000 originated, accepted and installed</td></tr>
+  <tr><td class="m">aspath</td><td>A prefix with the wrong AS path is denied — end to end</td></tr>
+  <tr><td class="m">nac</td><td>NaC-managed config matches the model, and day-0 config survived the apply</td></tr>
+</table>
+
+

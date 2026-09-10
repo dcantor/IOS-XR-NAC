@@ -227,6 +227,7 @@ prefixes to look at.
 | `configs/gobgp-user-data` | gobgp cloud-init: gobgpd, prefix injection |
 | `configs/gobgp-network-config` | gobgp interfaces, matched by MAC |
 | `nac/` | Cisco Network as Code (Terraform) -- see below |
+| `docs/IOS-XR-NAC-topology.pdf` | Three-page topology and testbed reference (source: `docs/topology.html`) |
 | `images/gobgp_4.9.0_linux_amd64.tar.gz` | gobgpd release, baked into gobgp's seed |
 | `run_tests.sh` | Run the Robot Framework suite against the running lab |
 | `nac/nac.sh` | Run Terraform against the routers (tunnels gNMI through nms) |
