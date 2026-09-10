@@ -504,16 +504,20 @@ match a policy rather than because nothing is being checked.
 
 ### AS-path validation
 
-The inbound policy on the eBGP session checks two independent things, and a
-prefix has to satisfy both:
+The inbound policy on the eBGP session checks two independent things, each
+against a named set, and a prefix has to satisfy both:
 
 ```
-as-path-set NAC-GOBGP-ASPATH
-  ios-regex '^65100$'
+prefix-set NAC-GOBGP-PREFIXES        as-path-set NAC-GOBGP-ASPATH
+  10.100.0.0/14 ge 24 le 24,           ios-regex '^65100$'
+  10.104.0.0/13 ge 24 le 24,         end-set
+  10.112.0.0/12 ge 24 le 24,
+  10.128.0.0/13 ge 24 le 24,
+  10.136.0.0/14 ge 24 le 24
 end-set
 !
 route-policy NAC-GOBGP-IN
-  if destination in (10.96.0.0/11 ge 24 le 24, 10.128.0.0/12 ge 24 le 24) and as-path in NAC-GOBGP-ASPATH then
+  if destination in NAC-GOBGP-PREFIXES and as-path in NAC-GOBGP-ASPATH then
     pass
   else
     drop
@@ -521,17 +525,28 @@ route-policy NAC-GOBGP-IN
 end-policy
 ```
 
+The five ranges cover second octets 100-139 and nothing else, which is
+exactly the block gobgp generates (`10.100.0.0/24` … `10.139.15.0/24`).
+`ge 24 le 24` pins the length to /24, so a **more specific** announcement
+inside the range -- the usual shape of a hijack or a leak -- does not match
+either.
+
+This replaced an inline `destination in (...)` match on `10.96.0.0/11` and
+`10.128.0.0/12`, which also quietly accepted second octets 96-99 and
+140-143. A named set is both tighter and visible in one place:
+`show running-config prefix-set NAC-GOBGP-PREFIXES`.
+
 `^65100$` is an AS path of exactly one hop, AS 65100: gobgp originated the
 prefix and nothing else has touched it. An eBGP peer can advertise any AS
 path it likes, so this is the check that catches a prefix which has transited
 somewhere it should not have, or which claims an origin it does not have --
 regardless of whether the prefix itself looks plausible.
 
-xr2 applies the same expectation a second time, inbound on the **iBGP**
-session from xr1 (`NAC-IBGP-IN`). AS paths are not rewritten inside an AS, so
-what gobgp originated still reads `65100` when it arrives from xr1. xr1
-already filters, so this is defence in depth: if xr1's policy were removed or
-mis-edited, xr2 would still refuse a prefix carrying an AS path it should
+xr2 applies both checks a second time, inbound on the **iBGP** session from
+xr1 (`NAC-IBGP-IN`). Neither the prefix nor the AS path is rewritten inside an
+AS, so both are still checkable there. xr1 already filters, so this is
+defence in depth: if xr1's policy were removed or mis-edited, xr2 would still
+refuse a prefix outside the expected block or carrying an AS path it should
 never see.
 
 To watch it work, originate two prefixes from gobgp that differ only in AS
@@ -733,6 +748,8 @@ unconfigured box. CDP takes up to a minute after that to populate.
 | Network As Code Owns The EBGP Route Policies | `nac` `bgp` | the NAC policies exist *and* are the ones the eBGP neighbour uses |
 | Day-0 Config Survived The Network As Code Apply | `nac` `bgp` | Terraform managing part of `router bgp` did not prune the day-0 iBGP neighbour, router-id or next-hop-self |
 | Routing Policies Check The AS Path | `nac` `bgp` `aspath` | the AS-path set exists on both routers and is referenced by the policies actually applied |
+| Route Policies Filter On A Named Prefix Set | `nac` `bgp` `prefixset` | the prefix-set exists on both routers, pins the length to /24, and is referenced by both inbound policies |
+| Prefixes Outside The Prefix Set Are Denied | `nac` `bgp` `prefixset` | end to end: of three prefixes with identical AS paths, only the in-range /24 is accepted |
 | Prefix With The Wrong AS Path Is Denied | `nac` `bgp` `aspath` | end to end: of two prefixes differing only in AS path, only the legitimate one reaches xr1's table |
 
 Layout:
@@ -778,6 +795,12 @@ doubles as a demonstration of why the iBGP session peers on loopbacks:
 # on xr1: configure terminal / interface Gi0/0/0/1 / shutdown / commit
 ./run_tests.sh --include ecmp --include bgp
 ```
+
+The prefix-set and AS-path tests can be checked the same way, by removing one
+half of the condition from `NAC-GOBGP-IN` by hand: the corresponding pair of
+tests fails -- including the end-to-end one, which is the proof that the
+rejected prefix really would have been accepted -- and `./nac.sh apply` puts
+the policy back.
 
 The ECMP test fails and names the interface
 (`xr1: 2.2.2.2/32 has [...one path...] -- expected 2 ECMP paths`), while both

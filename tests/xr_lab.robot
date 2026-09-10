@@ -522,3 +522,50 @@ Prefix With The Wrong AS Path Is Denied
 
     Prefix Should Be In Bgp Table        ${GOBGP_PEER}    ${ASPATH_PROBE_GOOD}
     Prefix Should Not Be In Bgp Table    ${GOBGP_PEER}    ${ASPATH_PROBE_BAD}
+
+Route Policies Filter On A Named Prefix Set
+    [Documentation]    The prefix-set exists on both routers and is what the
+    ...                policies actually reference -- on xr1 inbound from the
+    ...                external speaker, and on xr2 inbound from xr1.
+    [Tags]    nac    bgp    prefixset
+    FOR    ${node}    IN    @{NODES}
+        ${output}=    Run Command    ${node}
+        ...    show running-config prefix-set ${NAC_PREFIX_SET}
+        Should Contain    ${output}    prefix-set ${NAC_PREFIX_SET}
+        ...    ${node}: prefix-set ${NAC_PREFIX_SET} does not exist:\n${output}
+        # Pinned to /24 exactly, so a more specific announcement inside the
+        # range does not match either.
+        Should Contain    ${output}    ge 24 le 24
+        ...    ${node}: ${NAC_PREFIX_SET} does not pin the prefix length to /24:\n${output}
+    END
+
+    ${output}=    Run Command    ${GOBGP_PEER}    show running-config route-policy ${NAC_POLICY_IN}
+    Should Contain    ${output}    destination in ${NAC_PREFIX_SET}
+    ...    ${GOBGP_PEER}: ${NAC_POLICY_IN} does not filter on ${NAC_PREFIX_SET}:\n${output}
+
+    ${output}=    Run Command    xr2    show running-config route-policy ${NAC_POLICY_IBGP_IN}
+    Should Contain    ${output}    destination in ${NAC_PREFIX_SET}
+    ...    xr2: ${NAC_POLICY_IBGP_IN} does not filter on ${NAC_PREFIX_SET}:\n${output}
+
+Prefixes Outside The Prefix Set Are Denied
+    [Documentation]    The prefix-set exercised end to end. gobgp originates
+    ...                three prefixes with identical, valid AS paths, so the
+    ...                AS-path check cannot be what separates them: one is in
+    ...                the permitted range at /24, one is outside the range,
+    ...                and one is inside the range but a /25. Only the first
+    ...                should reach xr1.
+    [Tags]    nac    bgp    prefixset
+    [Teardown]    Withdraw Prefix Probes On Gobgp
+    ${before}=    Accepted Prefix Count On    ${GOBGP_PEER}
+    Should Be Equal As Integers    ${before}    ${GOBGP_PREFIX_COUNT}
+    ...    ${GOBGP_PEER} started from ${before} prefixes, not ${GOBGP_PREFIX_COUNT} -- probe would be ambiguous
+
+    Inject Prefix Probes On Gobgp
+
+    # Exactly one of the three is acceptable, so the count rises by one.
+    Wait Until Keyword Succeeds    60s    5s
+    ...    Accepted Count Should Be    ${GOBGP_PEER}    ${{ int(${before}) + 1 }}
+
+    Prefix Should Be In Bgp Table        ${GOBGP_PEER}    ${PREFIX_PROBE_GOOD}
+    Prefix Should Not Be In Bgp Table    ${GOBGP_PEER}    ${PREFIX_PROBE_OUT_OF_RANGE}
+    Prefix Should Not Be In Bgp Table    ${GOBGP_PEER}    ${PREFIX_PROBE_WRONG_LENGTH}

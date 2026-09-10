@@ -284,22 +284,28 @@
 </p>
 <table>
   <tr><th>Object</th><th>On</th><th>Purpose</th></tr>
+  <tr><td class="m">NAC-GOBGP-PREFIXES</td><td>xr1, xr2</td>
+      <td>prefix-set covering second octets 100-139 and nothing else — exactly the block gobgp
+          generates. <span class="m">ge 24 le 24</span> pins the length, so a more specific
+          announcement inside the range does not match either.</td></tr>
   <tr><td class="m">NAC-GOBGP-ASPATH</td><td>xr1, xr2</td>
       <td>as-path-set <span class="m">ios-regex '^65100$'</span> — an AS path of exactly one hop,
           AS 65100: gobgp originated it and nothing else has touched it.</td></tr>
   <tr><td class="m">NAC-GOBGP-IN</td><td>xr1 (eBGP in)</td>
-      <td>Accepts only if the destination is in the expected /24 range
-          <b>and</b> the AS path matches the set. Everything else is dropped.</td></tr>
+      <td>Accepts only if the destination is in <span class="m">NAC-GOBGP-PREFIXES</span>
+          <b>and</b> the AS path is in <span class="m">NAC-GOBGP-ASPATH</span>. Everything else is
+          dropped.</td></tr>
   <tr><td class="m">NAC-GOBGP-OUT</td><td>xr1 (eBGP out)</td><td><span class="m">pass</span>.</td></tr>
   <tr><td class="m">NAC-IBGP-IN</td><td>xr2 (iBGP in)</td>
-      <td>Same AS-path check applied again on what xr1 relays — defence in depth,
-          since AS paths are not rewritten inside an AS.</td></tr>
+      <td>Both checks applied again on what xr1 relays — defence in depth, since neither the
+          prefix nor the AS path is rewritten inside an AS.</td></tr>
 </table>
 <div class="note">
-  <b>Why the AS-path check matters:</b> an eBGP peer can advertise any AS path it likes.
-  A prefix in the right range but carrying <span class="m">65100 65200</span> — i.e. it transited
-  somewhere it should not have — is rejected. The test suite proves this by originating two
-  prefixes that differ <i>only</i> in AS path and confirming just one reaches the table.
+  <b>Why both checks:</b> an eBGP peer can advertise any prefix with any AS path it likes. A
+  prefix in the right range carrying <span class="m">65100 65200</span> — transited somewhere it
+  should not have — is rejected by the AS-path set; a prefix with a perfect AS path but outside
+  the block, or more specific than /24, is rejected by the prefix-set. The suite proves each
+  independently, by originating prefixes that differ in only one of the two.
 </div>
 
 <h2>Management and access</h2>
@@ -359,7 +365,7 @@
 
 <h2>Verification</h2>
 <p style="font-size:8.6pt;margin:0 0 6pt">
-  <span class="pass">29 of 29 Robot Framework tests passing</span> (77 s). Each run writes to its
+  <span class="pass">31 of 31 Robot Framework tests passing</span> (80 s). Each run writes to its
   own timestamped directory under <span class="m">test_results/</span>; sessions are tunnelled
   through nms, the same path an operator uses.
 </p>
@@ -374,6 +380,7 @@
   <tr><td class="m">nms, oob, ssh, syslog</td><td>OOB reachability, nms logging in to each router, syslog delivery per router</td></tr>
   <tr><td class="m">gobgp, prefixes</td><td>All 10 000 originated, accepted and installed</td></tr>
   <tr><td class="m">aspath</td><td>A prefix with the wrong AS path is denied — end to end</td></tr>
+  <tr><td class="m">prefixset</td><td>A prefix outside the permitted block, or more specific than /24, is denied — end to end</td></tr>
   <tr><td class="m">nac</td><td>NaC-managed config matches the model, and day-0 config survived the apply</td></tr>
 </table>
 

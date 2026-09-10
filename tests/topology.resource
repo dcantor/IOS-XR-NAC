@@ -32,14 +32,22 @@ ${NAC_POLICY_OUT}         NAC-GOBGP-OUT
 ${NAC_POLICY_IBGP_IN}     NAC-IBGP-IN
 ${NAC_ASPATH_SET}         NAC-GOBGP-ASPATH
 
-# Probe prefixes for the AS-path policy test. Both sit inside the policy's
-# destination match (10.128.0.0/12) but outside the 10000 gobgp originates
-# (which stop at 10.139.15.0/24), so injecting them cannot collide with a
-# real one -- picking 10.101.x by mistake silently *replaces* an injected
-# prefix instead of adding a new one.
-${ASPATH_PROBE_GOOD}      10.140.0.0/24
-${ASPATH_PROBE_BAD}       10.140.1.0/24
+# Probe prefixes. All of them sit inside NAC-GOBGP-PREFIXES (second octet
+# 100-139) but above the 10000 gobgp actually originates (which stop at
+# 10.139.15.0/24), so injecting one cannot collide with a real prefix --
+# picking 10.101.x by mistake silently *replaces* an injected prefix instead
+# of adding a new one, and the accepted count then falls instead of rising.
+#
+# The AS-path probes differ only in AS path, so only that check can separate
+# them; the prefix probes carry a valid AS path, so only the prefix-set can.
+${ASPATH_PROBE_GOOD}      10.139.30.0/24
+${ASPATH_PROBE_BAD}       10.139.31.0/24
 ${ASPATH_PROBE_BAD_AS}    65200
+
+${PREFIX_PROBE_GOOD}          10.139.40.0/24
+${PREFIX_PROBE_OUT_OF_RANGE}  10.200.0.0/24
+${PREFIX_PROBE_WRONG_LENGTH}  10.139.41.0/25
+${NAC_PREFIX_SET}             NAC-GOBGP-PREFIXES
 
 # The external BGP speaker: which router it peers with, over what addresses,
 # and how many prefixes it originates.
@@ -240,3 +248,23 @@ Accepted Count Should Be
     ${count}=    Accepted Prefix Count On    ${node}
     Should Be Equal As Integers    ${count}    ${expected}
     ...    ${node} accepts ${count} prefixes from gobgp, expected ${expected}
+
+Inject Prefix Probes On Gobgp
+    [Documentation]    Originate three prefixes from gobgp, all with the
+    ...                normal AS path: one the prefix-set should accept, one
+    ...                outside the permitted range, and one inside the range
+    ...                but more specific than /24.
+    FOR    ${prefix}    IN    ${PREFIX_PROBE_GOOD}    ${PREFIX_PROBE_OUT_OF_RANGE}
+    ...                       ${PREFIX_PROBE_WRONG_LENGTH}
+        ${rc}    ${out}    ${err}=    Run Command On Gobgp
+        ...    gobgp global rib add ${prefix} -a ipv4
+        Should Be Equal As Integers    ${rc}    0
+        ...    could not originate ${prefix}: ${err}
+    END
+
+Withdraw Prefix Probes On Gobgp
+    [Documentation]    Teardown for the prefix-set test.
+    FOR    ${prefix}    IN    ${PREFIX_PROBE_GOOD}    ${PREFIX_PROBE_OUT_OF_RANGE}
+    ...                       ${PREFIX_PROBE_WRONG_LENGTH}
+        Run Command On Gobgp    gobgp global rib del ${prefix} -a ipv4
+    END

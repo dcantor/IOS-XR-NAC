@@ -41,12 +41,33 @@ iosxr:
                 ios-regex '^65100$'
               end-set
 
+          # Exactly which prefixes gobgp is allowed to originate. The five
+          # ranges together cover second octets 100-139 and nothing else,
+          # which is precisely the block gobgp generates
+          # (10.100.0.0/24 .. 10.139.15.0/24). `ge 24 le 24` pins the length
+          # to /24, so a more-specific announcement inside the range -- the
+          # usual shape of a hijack or a leak -- does not match either.
+          #
+          # This replaces an inline `destination in (...)` match that used
+          # 10.96.0.0/11 and 10.128.0.0/12, and so quietly accepted second
+          # octets 96-99 and 140-143 as well.
+          - name: NAC-GOBGP-PREFIXES
+            type: prefix
+            rpl: |
+              prefix-set NAC-GOBGP-PREFIXES
+                10.100.0.0/14 ge 24 le 24,
+                10.104.0.0/13 ge 24 le 24,
+                10.112.0.0/12 ge 24 le 24,
+                10.128.0.0/13 ge 24 le 24,
+                10.136.0.0/14 ge 24 le 24
+              end-set
+
         # Inbound policy for the external speaker. Day-0 applies a
         # permissive `PASS` in both directions purely so the eBGP session
         # accepts anything at all (IOS-XR applies no default policy to eBGP);
         # this replaces the inbound half with one that checks both halves of
-        # what we expect: the right prefix range AND the right AS path. The
-        # two inline ranges together cover 10.100.0.0/24 .. 10.139.15.0/24.
+        # what we expect: the prefix is in NAC-GOBGP-PREFIXES AND the AS path
+        # is in NAC-GOBGP-ASPATH. Either one failing drops the prefix.
         # `rpl` is the *whole* policy, wrapper included -- the device stores
         # and returns it that way, and a bare body is rejected with
         # "There is a parse error in the policy." So the name is repeated
@@ -55,7 +76,7 @@ iosxr:
           - name: NAC-GOBGP-IN
             rpl: |
               route-policy NAC-GOBGP-IN
-                if destination in (10.96.0.0/11 ge 24 le 24, 10.128.0.0/12 ge 24 le 24) and as-path in NAC-GOBGP-ASPATH then
+                if destination in NAC-GOBGP-PREFIXES and as-path in NAC-GOBGP-ASPATH then
                   pass
                 else
                   drop
@@ -90,12 +111,13 @@ iosxr:
                 address: 10.98.2.1
                 mask: 255.255.255.255
 
-        # The same expectation, enforced a second time. xr1 already filters
-        # what it accepts from gobgp, so this is defence in depth rather
-        # than the primary check: if xr1's inbound policy were removed or
-        # mis-edited, xr2 would still refuse a prefix carrying an AS path it
-        # should never see over iBGP. AS paths are not rewritten inside an
-        # AS, so what gobgp originated still reads `65100` here.
+        # The same two expectations, enforced a second time. xr1 already
+        # filters what it accepts from gobgp, so this is defence in depth
+        # rather than the primary check: if xr1's inbound policy were removed
+        # or mis-edited, xr2 would still refuse a prefix outside the expected
+        # block or carrying an AS path it should never see over iBGP. Neither
+        # the prefix nor the AS path is rewritten inside an AS, so both are
+        # still checkable here.
         routing_sets:
           - name: NAC-GOBGP-ASPATH
             type: as_path
@@ -104,11 +126,22 @@ iosxr:
                 ios-regex '^65100$'
               end-set
 
+          - name: NAC-GOBGP-PREFIXES
+            type: prefix
+            rpl: |
+              prefix-set NAC-GOBGP-PREFIXES
+                10.100.0.0/14 ge 24 le 24,
+                10.104.0.0/13 ge 24 le 24,
+                10.112.0.0/12 ge 24 le 24,
+                10.128.0.0/13 ge 24 le 24,
+                10.136.0.0/14 ge 24 le 24
+              end-set
+
         route_policies:
           - name: NAC-IBGP-IN
             rpl: |
               route-policy NAC-IBGP-IN
-                if as-path in NAC-GOBGP-ASPATH then
+                if destination in NAC-GOBGP-PREFIXES and as-path in NAC-GOBGP-ASPATH then
                   pass
                 else
                   drop
