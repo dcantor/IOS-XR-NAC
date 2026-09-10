@@ -61,34 +61,97 @@ class XrParse:
                 rows.append(row)
         return rows
 
-    @keyword("Parse Isis Adjacencies")
-    def parse_isis_adjacencies(self, output):
-        """Return `show isis adjacency` rows as a list of dicts.
+    @keyword("Parse Ospf Neighbors")
+    def parse_ospf_neighbors(self, output):
+        """Return `show ospf neighbor` rows as a list of dicts.
 
-        Each row has system_id, interface, snpa and state. The reported
-        "Total adjacency count" is cross-checked against the rows parsed, so
-        a parsing miss fails loudly instead of silently shrinking the list.
+        Each row has neighbor_id, state, address and interface. The reported
+        "Total neighbor count" is cross-checked against the rows parsed, so a
+        parsing miss fails loudly instead of silently shrinking the list.
+
+        XR prints a continuation line ("Neighbor is up for ...") after each
+        row, and marks a neighbour waiting on BFD with a leading '#', both of
+        which the row regex has to tolerate.
         """
         rows = []
         row_re = re.compile(
-            r"^(?P<system_id>\S+)\s+"
-            r"(?P<interface>[A-Za-z]+[\d/.]+)\s+"
-            r"(?P<snpa>\S+)\s+"
-            r"(?P<state>Up|Init|Down|Failed)\b")
+            r"^#?\s*(?P<neighbor_id>\d+\.\d+\.\d+\.\d+)\s+"
+            r"(?P<priority>\d+)\s+"
+            r"(?P<state>\S+)\s*/\s*(?P<role>\S+)\s+"
+            r"(?P<dead_time>[\d:]+)\s+"
+            r"(?P<address>\d+\.\d+\.\d+\.\d+)\s+"
+            r"(?P<interface>\S+)")
         for line in output.split("\n"):
             m = row_re.match(line.strip())
             if m:
-                rows.append(m.groupdict())
+                row = m.groupdict()
+                # "FULL/  -" on a point-to-point link: state is the first half.
+                row["state"] = row["state"].strip()
+                rows.append(row)
 
-        total = re.search(r"Total adjacency count:\s*(\d+)", output)
+        total = re.search(r"Total neighbor count:\s*(\d+)", output)
         if total is None:
             raise XrParseError(
-                "no 'Total adjacency count' line in output; "
-                "is IS-IS configured?\n%s" % output)
+                "no 'Total neighbor count' line in output; "
+                "is OSPF configured?\n%s" % output)
         if int(total.group(1)) != len(rows):
             raise XrParseError(
-                "parsed %d adjacency rows but the device reported %s:\n%s"
+                "parsed %d neighbour rows but the device reported %s:\n%s"
                 % (len(rows), total.group(1), output))
+        return rows
+
+    @keyword("Parse Bfd Sessions")
+    def parse_bfd_sessions(self, output):
+        """Return `show bfd session` rows as a list of dicts.
+
+        The command prints two tables: single-hop sessions keyed by interface,
+        and multihop sessions keyed by source address. Both are returned, with
+        `kind` set to "single-hop" or "multihop", because the lab uses one of
+        each -- OSPF on the links, and BGP between the loopbacks.
+
+        Rows wrap onto a second line (the H/W and NPU columns), so the state
+        is taken from wherever it appears on the row's first line.
+        """
+        rows = []
+        single_re = re.compile(
+            r"^(?P<interface>[A-Za-z]+[\d/]+)\s+"
+            r"(?P<dest>\d+\.\d+\.\d+\.\d+)\s+"
+            r"(?P<echo>\S+)\s+(?P<async_>\S+(?:\([^)]*\))?)\s+"
+            r"(?P<state>UP|DOWN|INIT|ADMINDOWN)\b")
+        multi_re = re.compile(
+            r"^(?P<source>\d+\.\d+\.\d+\.\d+)\s+"
+            r"(?P<dest>\d+\.\d+\.\d+\.\d+)\s+"
+            r"(?P<vrf>\S+)")
+        pending = None
+        for line in output.split("\n"):
+            stripped = line.strip()
+            m = single_re.match(stripped)
+            if m:
+                d = m.groupdict()
+                rows.append({"kind": "single-hop", "interface": d["interface"],
+                             "dest": d["dest"], "state": d["state"]})
+                continue
+            m = multi_re.match(stripped)
+            if m:
+                # the state for a multihop row lands on the following line
+                pending = {"kind": "multihop", "interface": None,
+                           "dest": m.group("dest"), "source": m.group("source"),
+                           "state": None}
+                rows.append(pending)
+                continue
+            if pending is not None:
+                st = re.search(r"\b(UP|DOWN|INIT|ADMINDOWN)\b", stripped)
+                if st:
+                    pending["state"] = st.group(1)
+                    pending = None
+        if not rows:
+            raise XrParseError(
+                "no BFD sessions found -- is BFD configured?\n%s" % output)
+        missing = [r for r in rows if r["state"] is None]
+        if missing:
+            raise XrParseError(
+                "could not read the state of %d BFD session(s):\n%s"
+                % (len(missing), output))
         return rows
 
     @keyword("Get Values")
@@ -103,7 +166,7 @@ class XrParse:
     def parse_route(self, output):
         """Parse `show route <prefix>` into a dict.
 
-        Returns prefix, protocol (e.g. "isis CORE"), metric and a `paths`
+        Returns prefix, protocol (e.g. "ospf CORE"), metric and a `paths`
         list of {next_hop, interface} -- one entry per ECMP path, in the
         order the device listed them.
         """

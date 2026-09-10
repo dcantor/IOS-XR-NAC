@@ -39,21 +39,25 @@ configuration is managed with Cisco Network as Code (Terraform over gNMI).
 CDP is enabled globally and on both data interfaces.
 
 `Loopback0` (`1.1.1.1/32` on xr1, `2.2.2.2/32` on xr2) is each router's stable
-identity. IS-IS level-2 (`router isis CORE`) runs over both links and
+identity. OSPF (`router ospf CORE`, area 0) runs over both links and
 advertises the loopbacks as passive, so each router learns the other's /32
 over **both** links as an equal-cost pair:
 
 ```
 RP/0/RP0/CPU0:xr1#show route 2.2.2.2
-  Known via "isis CORE", distance 115, metric 10, type level-2
+  Known via "ospf CORE", distance 110, metric 2, type intra area
   Routing Descriptor Blocks
     10.1.1.2, from 2.2.2.2, via GigabitEthernet0/0/0/0
     10.1.2.2, from 2.2.2.2, via GigabitEthernet0/0/0/1
 ```
 
+Both links authenticate with OSPF MD5 (key id 1), and every session is
+protected by **BFD** at 300 ms x 3 -- see **OSPF, authentication and BFD**
+below.
+
 On top of that, the two routers run **iBGP in AS 65000, peering
 loopback-to-loopback** (`update-source Loopback0`). Because the session rides
-on an IS-IS-learned /32 with two paths, it survives either link failing --
+on an OSPF-learned /32 with two paths, it survives either link failing --
 which the test suite demonstrates.
 
 `nms` is a small Ubuntu VM on the out-of-band network. It receives syslog from
@@ -109,8 +113,8 @@ pattern of committing them, anywhere real.**
 | eBGP policy | one `PASS` from day-0 as a bootstrap | no permissive default, ever |
 | Terraform state | a local file | remote state with locking |
 
-The network design itself -- loopback-based iBGP, IS-IS advertising the
-loopbacks, `next-hop-self`, AS-path validation on what a peer sends -- is
+The network design itself -- loopback-based iBGP, OSPF advertising the
+loopbacks, `next-hop-self`, BFD, AS-path validation on what a peer sends -- is
 ordinary good practice and does translate. It is the *access* and *secret*
 handling that does not.
 
@@ -166,12 +170,18 @@ c8000v labs that also live on this host (2221-2223, 2231-2233, 2241,
 From `./lab.sh console xr1`, this is what a healthy lab looks like:
 
 ```
-RP/0/RP0/CPU0:xr1#show isis adjacency
-IS-IS CORE Level-2 adjacencies:
-System Id      Interface                SNPA           State Hold Changed
-xr2            Gi0/0/0/0                *PtoP*         Up    24   00:01:52
-xr2            Gi0/0/0/1                *PtoP*         Up    26   00:01:52
-Total adjacency count: 2
+RP/0/RP0/CPU0:xr1#show ospf neighbor
+Neighbor ID     Pri   State           Dead Time   Address         Interface
+2.2.2.2         1     FULL/  -        00:00:33    10.1.1.2        GigabitEthernet0/0/0/0
+2.2.2.2         1     FULL/  -        00:00:33    10.1.2.2        GigabitEthernet0/0/0/1
+Total neighbor count: 2
+
+RP/0/RP0/CPU0:xr1#show bfd session
+Interface     Dest Addr    Local det time(int*mult)   State
+Gi0/0/0/0     10.1.1.2     900ms(300ms*3)             UP
+Gi0/0/0/1     10.1.2.2     900ms(300ms*3)             UP
+Src Addr      Dest Addr    VRF Name
+1.1.1.1       2.2.2.2      default   900ms(300ms*3)   UP
 
 RP/0/RP0/CPU0:xr1#ping 10.1.1.2
 Success rate is 100 percent (5/5), round-trip min/avg/max = 4/7/19 ms
@@ -186,7 +196,7 @@ xr2             Gi0/0/0/1        159     R          IOS-XRv 9 Gi0/0/0/1
 
 RP/0/RP0/CPU0:xr1#show route 2.2.2.2
 Routing entry for 2.2.2.2/32
-  Known via "isis CORE", distance 115, metric 10, type level-2
+  Known via "ospf CORE", distance 110, metric 2, type intra area
   Routing Descriptor Blocks
     10.1.1.2, from 2.2.2.2, via GigabitEthernet0/0/0/0
     10.1.2.2, from 2.2.2.2, via GigabitEthernet0/0/0/1
@@ -204,9 +214,10 @@ BGP neighbor is 2.2.2.2
   Foreign host: 2.2.2.2, Foreign port: 179
 ```
 
-Two adjacencies, one per link; each node's only CDP neighbour on a link is its
-peer; the remote loopback is reached over both links; and the iBGP session is
-Established between the two loopbacks. `./run_tests.sh` asserts all of this.
+Two adjacencies, one per link; three BFD sessions up; each node's only CDP
+neighbour on a link is its peer; the remote loopback is reached over both
+links; and the iBGP session is Established between the two loopbacks.
+`./run_tests.sh` asserts all of this.
 
 Note the BGP session carries no prefixes (`St/PfxRcd` is 0): nothing is
 advertised into BGP, since the lab is about the peering itself. Add `network`
@@ -238,6 +249,50 @@ prefixes to look at.
 | `run/` | Overlay disks, day-0 ISOs, UEFI variable stores, pidfiles |
 | `test_results/` | One timestamped directory per run, plus a `latest` symlink |
 | `.venv/` | Test dependencies, created on first `./run_tests.sh` |
+
+## OSPF, authentication and BFD
+
+The IGP is OSPF, area 0, with both links as `network point-to-point` and
+`Loopback0` passive so the /32 is advertised without running OSPF on it.
+
+**Authentication.** Both links require MD5 (`authentication message-digest`,
+key id 1). A router with no key, or the wrong one, cannot form an adjacency.
+The key is a lab value in `configs/<node>.cfg`; the device stores it
+encrypted on commit, so it does not appear in `show running-config` as
+plaintext even though it is plaintext in the day-0 file.
+
+**BFD** gives sub-second failure detection -- 300 ms x 3 = 900 ms, against
+OSPF's own 40 s dead interval -- on three sessions per router:
+
+| Session | Type | Client |
+| --- | --- | --- |
+| `Gi0/0/0/0` -> peer | single-hop | OSPF |
+| `Gi0/0/0/1` -> peer | single-hop | OSPF |
+| loopback -> peer loopback | **multihop** | BGP |
+
+The multihop one is the awkward one and worth knowing about:
+
+> The iBGP session peers loopback-to-loopback, so its BFD session is not
+> attached to an interface -- it is multihop, and IOS-XR needs a line card
+> nominated to host it:
+>
+> ```
+> bfd
+>  multipath include location 0/0/CPU0
+> ```
+>
+> Without that the session sits at `MP download state:
+> BFD_MP_DOWNLOAD_NO_LC` and never comes up, while `show bfd session`
+> reports it plainly `DOWN` and `show bgp neighbor` says *"BFD not configured
+> on remote neighbor"* -- which points at the wrong end entirely. The BGP
+> session itself stays perfectly happy throughout, so nothing looks broken
+> unless you go looking. `0/RP0/CPU0` is **not** accepted for this: the
+> commit is rejected with *"Location is not a valid MH node"*. It has to be
+> the line card.
+
+**Not on the eBGP session.** BFD is deliberately absent from the peering with
+`gobgp`: GoBGP has no BFD implementation, so the session could never come up,
+and the config would be permanently misleading.
 
 ## The out-of-band network
 
@@ -368,7 +423,7 @@ The routers' configuration comes from two places, and the split matters:
 
 | | Owns | Delivered by |
 | --- | --- | --- |
-| **Day-0** (`configs/<node>.cfg`) | Bootstrap: hostname, credentials, management address, ssh, **grpc**; plus the interfaces, IS-IS and iBGP the lab is built on | `cvac`, from a CD-ROM at first boot |
+| **Day-0** (`configs/<node>.cfg`) | Bootstrap: hostname, credentials, management address, ssh, **grpc**, **bfd**; plus the interfaces, OSPF and iBGP the lab is built on | `cvac`, from a CD-ROM at first boot |
 | **Network as Code** (`nac/`) | A labelled slice: `Loopback98`, the AS-path set, the route-policies, and which policies each BGP neighbour uses | Terraform over gNMI |
 
 Day-0 has to exist first: it is what makes a router reachable by automation at
@@ -609,7 +664,7 @@ minute first boot.
 ```bash
 ./run_tests.sh                    # whole suite
 ./run_tests.sh --include cdp      # any robot option is passed through
-./run_tests.sh --include isis
+./run_tests.sh --include ospf
 ```
 
 The system Python is PEP 668 "externally managed", so `run_tests.sh` creates
@@ -654,10 +709,13 @@ unconfigured box. CDP takes up to a minute after that to populate.
 | Both Nodes Report The Expected Hostname | `version` `config` | day-0 config actually applied, so later failures are not just an unconfigured node |
 | CDP Discovers The Peer On Every Link | `cdp` | each node sees *exactly* its peer over each link, on the matching remote port |
 | CDP Reports The Peer As An XRv9000 Router | `cdp` | two neighbours per node, Router capability, `IOS-XRv 9` platform |
-| ISIS Adjacency Is Up On Every Link | `isis` | one level-2 adjacency per link, `Up`, with the right peer |
-| ISIS Has Exactly Two Adjacencies Per Node | `isis` | both links carry an adjacency and no others exist |
+| OSPF Adjacency Is Full On Every Link | `ospf` | one neighbour per link, `FULL`, with the right router-id |
+| OSPF Has Exactly Two Neighbors Per Node | `ospf` | both links carry an adjacency and no others exist |
+| OSPF Authentication Is Active On Every Link | `ospf` `auth` | message-digest authentication in effect on the interface, key id 1 |
+| BFD Is Protecting Both OSPF Links | `bfd` `ospf` | a single-hop session per link, `UP`, and OSPF reporting it uses BFD at 300 ms x 3 |
+| BFD Is Protecting The IBGP Session | `bfd` `bgp` | the multihop session between the loopbacks is `UP`, and BGP reports it up |
 | Loopback0 Has The Expected Host Address | `loopback` | the peering loopback is configured as a /32 |
-| Peer Loopback Is Learned From ISIS Over Two ECMP Paths | `loopback` `isis` `ecmp` | the peer's /32 comes from IS-IS with exactly 2 paths, one per link, via the right next hop on each |
+| Peer Loopback Is Learned From OSPF Over Two ECMP Paths | `loopback` `ospf` `ecmp` | the peer's /32 comes from OSPF with exactly 2 paths, one per link, via the right next hop on each |
 | IBGP Session To The Peer Is Established | `bgp` | exactly one neighbour, the peer's loopback, in AS 65000, Established |
 | IBGP Peering Uses The Loopback Addresses | `bgp` `loopback` | the TCP session's local/foreign addresses are the loopbacks, so `update-source` really took effect |
 | Management Server Is Ready | `nms` | nms finished cloud-init and rsyslog is running |
@@ -846,7 +904,7 @@ time and discards output when nobody is connected:
 ```bash
 ./tools/conmux.py xr1 5101 &
 tail -f run/xr1-console.log
-printf 'show isis adjacency\r' > run/xr1.in
+printf 'show ospf neighbor\r' > run/xr1.in
 ```
 
 `tools/qmon.py` talks to a node's QEMU monitor and refuses to forward `quit`

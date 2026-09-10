@@ -1,7 +1,7 @@
 *** Settings ***
 Documentation     Validates the two-node IOS-XRv9000 lab: the software
 ...               release on each node, CDP neighbour discovery over both
-...               links, IS-IS adjacency over both links, the loopbacks and
+...               links, OSPF adjacency over both links, the loopbacks and
 ...               their ECMP reachability through IS-IS, and the iBGP session
 ...               peering loopback-to-loopback.
 ...
@@ -69,39 +69,113 @@ CDP Reports The Peer As An XRv9000 Router
         END
     END
 
-ISIS Adjacency Is Up On Every Link
-    [Documentation]    One level-2 adjacency to the peer per link, both Up.
-    [Tags]    isis
+OSPF Adjacency Is Full On Every Link
+    [Documentation]    One OSPF neighbour per link, in FULL state, with the
+    ...                right peer. Point-to-point links have no DR/BDR, so
+    ...                FULL is the only healthy state.
+    [Tags]    ospf
     FOR    ${node}    IN    @{NODES}
-        FOR    ${interface}    IN    @{LINK_INTERFACES_SHORT}
-            ${rows}=    Adjacencies On Interface    ${node}    ${interface}
+        FOR    ${interface}    IN    @{LINK_INTERFACES}
+            ${rows}=    Ospf Neighbors On Interface    ${node}    ${interface}
             Length Should Be    ${rows}    1
-            ...    ${node} ${interface}: expected exactly 1 IS-IS adjacency, got ${rows}
+            ...    ${node} ${interface}: expected exactly 1 OSPF neighbour, got ${rows}
             ${row}=    Set Variable    ${rows}[0]
-            Should Be Equal    ${row}[state]    Up
-            ...    ${node} ${interface}: adjacency to ${row}[system_id] is ${row}[state], not Up
-            Should Be Equal    ${row}[system_id]    ${PEER}[${node}]
-            ...    ${node} ${interface}: adjacency is with ${row}[system_id], expected ${PEER}[${node}]
+            Should Be Equal    ${row}[state]    FULL
+            ...    ${node} ${interface}: neighbour ${row}[neighbor_id] is ${row}[state], not FULL
+            Should Be Equal    ${row}[neighbor_id]    ${LOOPBACK}[${PEER}[${node}]]
+            ...    ${node} ${interface}: neighbour id is ${row}[neighbor_id], expected the peer's router-id
         END
     END
 
-ISIS Has Exactly Two Adjacencies Per Node
+OSPF Has Exactly Two Neighbors Per Node
     [Documentation]    Both links carry an adjacency and no extra ones exist,
     ...                which is what makes the pair an equal-cost pair.
-    [Tags]    isis
+    [Tags]    ospf
     FOR    ${node}    IN    @{NODES}
-        ${output}=    Run Command    ${node}    show isis adjacency
-        ${rows}=      Parse Isis Adjacencies    ${output}
+        ${output}=    Run Command    ${node}    show ospf neighbor
+        ${rows}=      Parse Ospf Neighbors    ${output}
         Length Should Be    ${rows}    2
-        ...    ${node}: expected 2 IS-IS adjacencies, got ${rows}
+        ...    ${node}: expected 2 OSPF neighbours, got ${rows}
         ${interfaces}=    Get Values    ${rows}    interface
         Sort List         ${interfaces}
-        Lists Should Be Equal    ${interfaces}    ${LINK_INTERFACES_SHORT}
-        ...    ${node}: adjacencies are on ${interfaces}, expected one per link
-        ${states}=    Get Values    ${rows}    state
-        FOR    ${state}    IN    @{states}
-            Should Be Equal    ${state}    Up    ${node}: adjacency states are ${states}
+        Lists Should Be Equal    ${interfaces}    ${LINK_INTERFACES}
+        ...    ${node}: neighbours are on ${interfaces}, expected one per link
+    END
+
+OSPF Authentication Is Active On Every Link
+    [Documentation]    Message-digest authentication is in effect on the
+    ...                interface, not merely present in the configuration --
+    ...                read back from the OSPF process, which is what decides
+    ...                whether a neighbour is allowed to form an adjacency.
+    [Tags]    ospf    auth
+    FOR    ${node}    IN    @{NODES}
+        FOR    ${interface}    IN    @{LINK_INTERFACES}
+            ${output}=    Run Command    ${node}    show ospf interface ${interface}
+            Should Contain    ${output}    Message digest authentication enabled
+            ...    ${node} ${interface}: OSPF authentication is not active:\n${output}
+            Should Contain    ${output}    Youngest key id is 1
+            ...    ${node} ${interface}: expected MD5 key id 1:\n${output}
         END
+    END
+
+BFD Is Protecting Both OSPF Links
+    [Documentation]    A single-hop BFD session per link, up, with the
+    ...                configured timers -- and OSPF itself reporting that it
+    ...                is using BFD. 300 ms x 3 gives 900 ms detection against
+    ...                OSPF's own 40 s dead interval.
+    [Tags]    bfd    ospf
+    FOR    ${node}    IN    @{NODES}
+        ${sessions}=    Bfd Sessions On    ${node}
+        ${single}=      Create List
+        FOR    ${s}    IN    @{sessions}
+            IF    '${s}[kind]' == 'single-hop'
+                Append To List    ${single}    ${s}
+            END
+        END
+        Length Should Be    ${single}    ${BFD_SINGLE_HOP_SESSIONS}
+        ...    ${node}: expected ${BFD_SINGLE_HOP_SESSIONS} single-hop BFD sessions, got ${single}
+        FOR    ${s}    IN    @{single}
+            Should Be Equal    ${s}[state]    UP
+            ...    ${node}: BFD to ${s}[dest] on ${s}[interface] is ${s}[state], not UP
+        END
+
+        # ...and OSPF is the client using them.
+        FOR    ${interface}    IN    @{LINK_INTERFACES}
+            ${output}=    Run Command    ${node}    show ospf interface ${interface}
+            Should Match Regexp    ${output}
+            ...    BFD enabled, BFD interval ${BFD_INTERVAL} msec, BFD multiplier ${BFD_MULTIPLIER}
+            ...    ${node} ${interface}: OSPF is not using BFD with the expected timers:\n${output}
+        END
+    END
+
+BFD Is Protecting The IBGP Session
+    [Documentation]    The iBGP session peers loopback-to-loopback, so its BFD
+    ...                session is multihop. That needs a line card nominated
+    ...                to host it (`bfd multipath include location 0/0/CPU0`);
+    ...                without it the session stays in BFD_MP_DOWNLOAD_NO_LC
+    ...                and never comes up, which is easy to miss because the
+    ...                BGP session itself stays happily up regardless.
+    [Tags]    bfd    bgp
+    FOR    ${node}    IN    @{NODES}
+        ${sessions}=    Bfd Sessions On    ${node}
+        ${multihop}=    Create List
+        FOR    ${s}    IN    @{sessions}
+            IF    '${s}[kind]' == 'multihop'
+                Append To List    ${multihop}    ${s}
+            END
+        END
+        Length Should Be    ${multihop}    ${BFD_MULTIHOP_SESSIONS}
+        ...    ${node}: expected ${BFD_MULTIHOP_SESSIONS} multihop BFD session, got ${multihop}
+        ${s}=    Set Variable    ${multihop}[0]
+        Should Be Equal    ${s}[dest]    ${PEER_LOOPBACK}[${node}]
+        ...    ${node}: multihop BFD is to ${s}[dest], expected the peer loopback
+        Should Be Equal    ${s}[state]    UP
+        ...    ${node}: multihop BFD to ${s}[dest] is ${s}[state], not UP
+
+        # ...and BGP is the client using it.
+        ${output}=    Run Command    ${node}    show bgp neighbor ${PEER_LOOPBACK}[${node}]
+        Should Contain    ${output}    BFD enabled (session up)
+        ...    ${node}: BGP does not report BFD up to ${PEER_LOOPBACK}[${node}]:\n${output}
     END
 
 Loopback0 Has The Expected Host Address
@@ -114,19 +188,19 @@ Loopback0 Has The Expected Host Address
         ...    ${node}: Loopback0 is not ${LOOPBACK}[${node}]/32:\n${output}
     END
 
-Peer Loopback Is Learned From ISIS Over Two ECMP Paths
+Peer Loopback Is Learned From OSPF Over Two ECMP Paths
     [Documentation]    The whole point of advertising the loopbacks: each
-    ...                router reaches the other's /32 through IS-IS, and does
+    ...                router reaches the other's /32 through OSPF, and does
     ...                so over both links rather than just one.
-    [Tags]    loopback    isis    ecmp
+    [Tags]    loopback    ospf    ecmp
     FOR    ${node}    IN    @{NODES}
         ${peer_lo}=    Set Variable    ${PEER_LOOPBACK}[${node}]
         ${output}=     Run Command    ${node}    show route ${peer_lo}
         ${route}=      Parse Route    ${output}
 
         Should Be Equal    ${route}[prefix]    ${peer_lo}/32
-        Should Be Equal    ${route}[protocol]    ${ISIS_PROTOCOL}
-        ...    ${node}: ${peer_lo}/32 came from "${route}[protocol]", expected "${ISIS_PROTOCOL}"
+        Should Be Equal    ${route}[protocol]    ${OSPF_PROTOCOL}
+        ...    ${node}: ${peer_lo}/32 came from "${route}[protocol]", expected "${OSPF_PROTOCOL}"
 
         Length Should Be    ${route}[paths]    2
         ...    ${node}: ${peer_lo}/32 has ${route}[paths] -- expected 2 ECMP paths

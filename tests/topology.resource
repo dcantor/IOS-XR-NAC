@@ -73,8 +73,15 @@ ${CDP_PLATFORM}       IOS-XRv 9
 &{PEER_IP_LINK1}      xr1=10.1.1.2    xr2=10.1.1.1
 &{PEER_IP_LINK2}      xr1=10.1.2.2    xr2=10.1.2.1
 
-# IS-IS reports the process it learned a route from as "<protocol> <tag>".
-${ISIS_PROTOCOL}      isis CORE
+# OSPF reports the process it learned a route from as "<protocol> <tag>".
+${OSPF_PROTOCOL}      ospf CORE
+${OSPF_PROCESS}       CORE
+# Sub-second failure detection: 300 ms x 3 on every session.
+${BFD_INTERVAL}       300
+${BFD_MULTIPLIER}     3
+# One single-hop session per link (OSPF) plus one multihop (iBGP loopbacks).
+${BFD_SINGLE_HOP_SESSIONS}    2
+${BFD_MULTIHOP_SESSIONS}      1
 
 # Both routers are in one AS, so the peering is iBGP ("internal link").
 ${BGP_AS}             65000
@@ -106,11 +113,11 @@ Neighbors On Interface
     END
     RETURN    ${matching}
 
-Adjacencies On Interface
-    [Documentation]    IS-IS adjacency rows on ${node} over ${interface}.
+Ospf Neighbors On Interface
+    [Documentation]    OSPF neighbour rows on ${node} over ${interface}.
     [Arguments]    ${node}    ${interface}
-    ${output}=    Run Command    ${node}    show isis adjacency
-    ${rows}=      Parse Isis Adjacencies    ${output}
+    ${output}=    Run Command    ${node}    show ospf neighbor
+    ${rows}=      Parse Ospf Neighbors    ${output}
     ${matching}=  Create List
     FOR    ${row}    IN    @{rows}
         IF    '${row}[interface]' == '${interface}'
@@ -118,6 +125,13 @@ Adjacencies On Interface
         END
     END
     RETURN    ${matching}
+
+Bfd Sessions On
+    [Documentation]    All BFD sessions ${node} currently has.
+    [Arguments]    ${node}
+    ${output}=    Run Command    ${node}    show bfd session
+    ${rows}=      Parse Bfd Sessions    ${output}
+    RETURN    ${rows}
 
 Nms Should Be Ready
     [Documentation]    cloud-init has finished and the syslog server is up.
