@@ -521,6 +521,40 @@ Network As Code Owns The EBGP Route Policies
     Should Contain    ${output}    route-policy ${NAC_POLICY_OUT} out
     ...    ${GOBGP_PEER}: the eBGP neighbour is not using ${NAC_POLICY_OUT} outbound:\n${output}
 
+Network As Code Manages The Login Banner
+    [Documentation]    The login banner comes from nac/iosxr.nac.yaml and
+    ...                nowhere else -- there is no banner in
+    ...                configs/<node>.cfg -- so this failing means Terraform
+    ...                has not been applied, or the banner has been changed
+    ...                by hand.
+    [Tags]    nac    banner
+    FOR    ${node}    IN    @{NODES}
+        ${output}=    Run Command    ${node}
+        ...    show running-config banner ${BANNER_TYPE}
+        Should Contain    ${output}    ${BANNER_IDENTITY}[${node}]
+        ...    ${node}: the ${BANNER_TYPE} banner does not name this router:\n${output}
+        Should Contain    ${output}    ${BANNER_NOTICE}
+        ...    ${node}: the ${BANNER_TYPE} banner is missing the access notice:\n${output}
+    END
+
+Login Banner Is Shown When Logging In
+    [Documentation]    The end-to-end half: a banner in the running config is
+    ...                not the same as a banner a user actually sees. This
+    ...                logs in from nms with a real SSH client and checks
+    ...                what was printed before the session started, and that
+    ...                it names the router being logged into rather than the
+    ...                other one.
+    [Tags]    nac    banner    ssh
+    FOR    ${node}    IN    @{NODES}
+        ${banner}=    Login Banner From    ${node}
+        Should Contain    ${banner}    ${BANNER_IDENTITY}[${node}]
+        ...    logging in to ${node} did not show its banner. Got:\n${banner}
+        Should Contain    ${banner}    ${BANNER_NOTICE}
+        ...    ${node} showed a banner without the access notice:\n${banner}
+        Should Not Contain    ${banner}    ${BANNER_IDENTITY}[${PEER}[${node}]]
+        ...    logging in to ${node} showed ${PEER}[${node}]'s banner:\n${banner}
+    END
+
 Day-0 Config Survived The Network As Code Apply
     [Documentation]    Terraform managing part of `router bgp` must not prune
     ...                the rest of it. The iBGP neighbour, its next-hop-self

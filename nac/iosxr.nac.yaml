@@ -19,6 +19,31 @@ iosxr:
         # anything.
         hostname: xr1
 
+        # Login banner, shown before the password prompt on every SSH and
+        # console login.
+        #
+        # `banner` is the whole delimited string the CLI would take, opening
+        # and closing delimiter included -- the device stores and returns it
+        # that way (`banner login #...#` in the running config), the same as
+        # `rpl` above. The delimiter is # here, so the text must not contain
+        # one.
+        #
+        # Naming the router in the banner means a login shows which device
+        # answered before any command is typed, and gives the test something
+        # device-specific to match on.
+        banners:
+          - type: login
+            banner: |-
+              #
+
+                xr1 -- Cisco IOS-XRv9000 lab
+
+                Authorized access only. Activity may be logged and monitored.
+                Configuration is managed by Cisco Network as Code: changes
+                made by hand are reverted on the next apply.
+
+              #
+
         interfaces:
           loopbacks:
             - id: 98
@@ -102,6 +127,21 @@ iosxr:
       host: 127.0.0.1:57412
       configuration:
         hostname: xr2
+
+        # As on xr1, naming this router. See the note there about the
+        # delimiters being part of the value.
+        banners:
+          - type: login
+            banner: |-
+              #
+
+                xr2 -- Cisco IOS-XRv9000 lab
+
+                Authorized access only. Activity may be logged and monitored.
+                Configuration is managed by Cisco Network as Code: changes
+                made by hand are reverted on the next apply.
+
+              #
 
         interfaces:
           loopbacks:

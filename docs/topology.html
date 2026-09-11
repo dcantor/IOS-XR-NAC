@@ -373,8 +373,8 @@
           OSPF (with MD5 auth and BFD) and iBGP the lab is built on</td>
       <td><span class="m">cvac</span>, from a CD-ROM at first boot</td></tr>
   <tr><td><b>Network as Code</b><br><span class="m">nac/iosxr.nac.yaml</span></td>
-      <td>Loopback98, the AS-path set, the route-policies, and which policies each BGP
-          neighbour uses</td>
+      <td>Loopback98, the login banner, the AS-path and prefix sets, the route-policies, and
+          which policies each BGP neighbour uses</td>
       <td>Terraform over gNMI —
           <span class="m">netascode/nac-iosxr</span> 0.1.1 /
           <span class="m">CiscoDevNet/iosxr</span> 0.7.1</td></tr>
@@ -387,7 +387,7 @@
 
 <h2>Verification</h2>
 <p style="font-size:8.6pt;margin:0 0 6pt">
-  <span class="pass">35 of 35 Robot Framework tests passing</span> (about 2 min). Each run writes to its
+  <span class="pass">37 of 37 Robot Framework tests passing</span> (about 2 min). Each run writes to its
   own timestamped directory under <span class="m">test_results/</span>; sessions are tunnelled
   through nms, the same path an operator uses.
 </p>
@@ -405,6 +405,7 @@
   <tr><td class="m">aspath</td><td>A prefix with the wrong AS path is denied — end to end</td></tr>
   <tr><td class="m">prefixset</td><td>A prefix outside the permitted block, or more specific than /24, is denied — end to end</td></tr>
   <tr><td class="m">nac</td><td>NaC-managed config matches the model, and day-0 config survived the apply</td></tr>
+  <tr><td class="m">nac, banner</td><td>The login banner matches the model, and is actually displayed when logging in</td></tr>
 </table>
 
 

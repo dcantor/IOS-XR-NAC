@@ -426,7 +426,7 @@ The routers' configuration comes from two places, and the split matters:
 | | Owns | Delivered by |
 | --- | --- | --- |
 | **Day-0** (`configs/<node>.cfg`) | Bootstrap: hostname, credentials, management address, ssh, **grpc**, **bfd**; plus the interfaces, OSPF and iBGP the lab is built on | `cvac`, from a CD-ROM at first boot |
-| **Network as Code** (`nac/`) | A labelled slice: `Loopback98`, the AS-path set, the route-policies, and which policies each BGP neighbour uses | Terraform over gNMI |
+| **Network as Code** (`nac/`) | A labelled slice: `Loopback98`, the login banner, the AS-path and prefix sets, the route-policies, and which policies each BGP neighbour uses | Terraform over gNMI |
 
 Day-0 has to exist first: it is what makes a router reachable by automation at
 all. Network as Code then reconciles the parts it owns, and can be re-run at
@@ -575,6 +575,46 @@ hand: pick prefixes **outside** the injected range (which stops at
 10000, so originating it with a different AS path silently *replaces* a real
 prefix rather than adding a new one -- the accepted count goes *down* by one
 instead of up, which is a confusing way to read a passing policy.
+
+### The login banner
+
+The banner is Network as Code's, not day-0's -- `configs/<node>.cfg` has no
+banner at all -- so it is a clean demonstration of the split:
+
+```yaml
+banners:
+  - type: login
+    banner: |-
+      #
+
+        xr1 -- Cisco IOS-XRv9000 lab
+
+        Authorized access only. Activity may be logged and monitored.
+        Configuration is managed by Cisco Network as Code: changes
+        made by hand are reverted on the next apply.
+
+      #
+```
+
+`banner` is the whole delimited string, **opening and closing delimiter
+included** -- the same shape as `rpl` below, and for the same reason: the
+device stores and returns it that way (`banner login #...#` in the running
+config). The delimiter here is `#`, so the text must not contain one.
+Deleting the banner by hand and running `./nac.sh plan` shows `1 to add` for
+that router alone; `apply` puts it back, which is precisely what the banner
+claims will happen.
+
+Two things about *seeing* it, both of which made it look briefly as though
+the banner had not applied:
+
+* **`xrssh` hides it.** The wrapper runs with `-o LogLevel=ERROR` to keep the
+  known-hosts warning out of command output, and OpenSSH prints the banner
+  only at `INFO` or above. `ssh` without that option shows it.
+* **paramiko never sees it.** IOS-XR sends the banner in reply to the `none`
+  authentication probe OpenSSH opens with; paramiko, given a password, goes
+  straight to password authentication, so `transport.get_banner()` returns
+  `None`. The banner test therefore logs in with a real SSH client from nms
+  and reads stderr, rather than reusing the suite's own sessions.
 
 ### Drift detection
 
@@ -852,6 +892,8 @@ unconfigured box. CDP takes up to a minute after that to populate.
 | Injected Prefixes Are Installed In The Routing Table | `gobgp` `prefixes` | a prefix is in the RIB with gobgp as next hop, not merely in the BGP table |
 | Injected Prefixes Reach The Other Router Over IBGP | `gobgp` `bgp` `prefixes` `ibgp` | xr2 holds all 10000, with xr1's loopback as next hop (proves next-hop-self) |
 | Network As Code Manages The Labelled Loopback | `nac` | `Loopback98` matches `nac/iosxr.nac.yaml` -- config only Terraform creates |
+| Network As Code Manages The Login Banner | `nac` `banner` | the login banner on each router matches the model -- again, config only Terraform creates |
+| Login Banner Is Shown When Logging In | `nac` `banner` `ssh` | logging in from nms actually displays that router's banner, not just stores it |
 | Network As Code Owns The EBGP Route Policies | `nac` `bgp` | the NAC policies exist *and* are the ones the eBGP neighbour uses |
 | Day-0 Config Survived The Network As Code Apply | `nac` `bgp` | Terraform managing part of `router bgp` did not prune the day-0 iBGP neighbour, router-id or next-hop-self |
 | Routing Policies Check The AS Path | `nac` `bgp` `aspath` | the AS-path set exists on both routers and is referenced by the policies actually applied |

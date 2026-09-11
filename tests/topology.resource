@@ -32,6 +32,17 @@ ${NAC_POLICY_OUT}         NAC-GOBGP-OUT
 ${NAC_POLICY_IBGP_IN}     NAC-IBGP-IN
 ${NAC_ASPATH_SET}         NAC-GOBGP-ASPATH
 
+# The login banner, also owned by Network as Code. Its first line names the
+# router, so one login shows which device answered -- and gives the banner
+# test something device-specific to match on rather than text that would be
+# identical everywhere.
+${BANNER_TYPE}            login
+&{BANNER_IDENTITY}        xr1=xr1 -- Cisco IOS-XRv9000 lab    xr2=xr2 -- Cisco IOS-XRv9000 lab
+${BANNER_NOTICE}          Authorized access only. Activity may be logged and monitored.
+# Logging in needs the router credentials; XrCli holds the same pair.
+${XR_USER}                admin
+${XR_PASSWORD}            Admin@12345
+
 # Probe prefixes. All of them sit inside NAC-GOBGP-PREFIXES (second octet
 # 100-139) but above the 10000 gobgp actually originates (which stop at
 # 10.139.15.0/24), so injecting one cannot collide with a real prefix --
@@ -366,3 +377,31 @@ Configuration Trap Should Have Arrived From
     ${lines}=    Trap Log Lines From    ${node}    ${from_line}
     Should Contain    ${lines}    ${SNMP_CONFIG_TRAP_OID}
     ...    no ciscoConfigManEvent (${SNMP_CONFIG_TRAP_OID}) trap from ${node} since line ${from_line} of ${SNMP_TRAP_LOG}:\n${lines}
+
+Login Banner From
+    [Documentation]    Log in to ${node} from nms with a real SSH client and
+    ...                return whatever it printed before the session began.
+    ...
+    ...                Not through the xrssh wrapper, and not through the
+    ...                suite's own paramiko sessions, for two different
+    ...                reasons. xrssh runs with `LogLevel=ERROR` to keep the
+    ...                known-hosts warning out of command output, and that
+    ...                also suppresses the banner. paramiko never sees one at
+    ...                all: IOS-XR sends the banner in reply to the `none`
+    ...                authentication probe OpenSSH opens with, and paramiko
+    ...                given a password goes straight to password auth.
+    ...
+    ...                The banner arrives as SSH_MSG_USERAUTH_BANNER and the
+    ...                client prints it to stderr, so stdout is discarded and
+    ...                stderr kept.
+    [Arguments]    ${node}
+    ${cmd}=    Catenate
+    ...    sshpass -p '${XR_PASSWORD}' ssh
+    ...    -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null
+    ...    -o LogLevel=INFO -o PreferredAuthentications=password
+    ...    -o PubkeyAuthentication=no
+    ...    ${XR_USER}@${OOB_IP}[${node}] 'show clock' 2>&1 1>/dev/null
+    ${rc}    ${out}    ${err}=    Run Command On Nms    ${cmd}
+    Should Be Equal As Integers    ${rc}    0
+    ...    could not log in to ${node} from nms to read its banner: ${out}
+    RETURN    ${out}
